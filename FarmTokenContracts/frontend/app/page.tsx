@@ -106,27 +106,11 @@ export default function DashboardPage() {
     if (!provider || !hasAllAddresses()) return;
     try {
       const contracts = getContracts(provider);
-      let lockedIds: bigint[] = [];
-      let vol = 0n;
-      let dynamicMax = 0n;
-
-      try {
-        lockedIds = await contracts.vault.getLockedTokenIds();
-      } catch {
-        lockedIds = [];
-      }
-
-      try {
-        vol = await contracts.oracle.volatilityIndex();
-      } catch {
-        vol = 0n;
-      }
-
-      try {
-        dynamicMax = await contracts.loan.getDynamicMaxLTV();
-      } catch {
-        dynamicMax = 0n;
-      }
+      const [lockedIds, vol, dynamicMax] = await Promise.all([
+        contracts.vault.getLockedTokenIds(),
+        contracts.oracle.volatilityIndex(),
+        contracts.loan.getDynamicMaxLTV(),
+      ]);
 
       const allRows = await Promise.all(
         lockedIds.map(async (id: bigint) => {
@@ -153,11 +137,7 @@ export default function DashboardPage() {
       setRows(allRows);
       setVolatility(vol);
       setMaxLtv(dynamicMax);
-      setStatus(
-        lockedIds.length
-          ? "Live data refreshed"
-          : "Live data refreshed (vault position methods unavailable for current address/network)"
-      );
+      setStatus("Live data refreshed");
     } catch (error) {
       setStatus(`Refresh failed: ${(error as Error).message}`);
     }
