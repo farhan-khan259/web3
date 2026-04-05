@@ -165,32 +165,32 @@ export default function DashboardPage() {
       <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-6">
         <h2 className="mb-3 text-xl">NFT Mirror Output</h2>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1000px] text-left text-sm">
+          <table className="w-full min-w-[1000px] text-sm">
             <thead className="text-slate-400">
               <tr>
-                <th className="pb-2">NFT ID</th>
-                <th className="pb-2">Contract Address</th>
-                <th className="pb-2">NFT Type</th>
-                <th className="pb-2">Oracle Used</th>
-                <th className="pb-2">Oracle Source</th>
-                <th className="pb-2">Oracle Price</th>
-                <th className="pb-2">LTV Value</th>
-                <th className="pb-2">Trait Prevalence</th>
+                <th className="pb-2 text-left">NFT ID</th>
+                <th className="pb-2 text-left">Contract Address</th>
+                <th className="pb-2 text-left">NFT Type</th>
+                <th className="pb-2 text-left">Oracle Used</th>
+                <th className="pb-2 text-left">Oracle Source</th>
+                <th className="pb-2 text-right">Oracle Price</th>
+                <th className="pb-2 text-right">LTV Value</th>
+                <th className="pb-2 text-right">Trait Prevalence</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={`${row.contractAddress}:${row.tokenId}`} className="border-t border-slate-800">
-                  <td className="py-2">{row.tokenId}</td>
+                  <td className="py-2 font-mono tabular-nums">{row.tokenId}</td>
                   <td className="py-2 font-mono text-xs">{row.contractAddress}</td>
                   <td className="py-2">
                     <span className={row.nftType === "RARE" ? "text-amber-300" : "text-cyan-300"}>{row.nftType}</span>
                   </td>
                   <td className="py-2">{row.oracleName}</td>
                   <td className="py-2">{row.oracleSource}</td>
-                  <td className="py-2">{row.oraclePriceEth !== null ? `${row.oraclePriceEth.toFixed(6)} ETH` : "n/a"}</td>
-                  <td className="py-2">{row.ltvEth !== null ? `${row.ltvEth.toFixed(6)} ETH` : "n/a"}</td>
-                  <td className="py-2">
+                  <td className="py-2 text-right font-mono tabular-nums">{row.oraclePriceEth !== null ? `${row.oraclePriceEth.toFixed(6)} ETH` : "n/a"}</td>
+                  <td className="py-2 text-right font-mono tabular-nums">{row.ltvEth !== null ? `${row.ltvEth.toFixed(6)} ETH` : "n/a"}</td>
+                  <td className="py-2 text-right font-mono tabular-nums">
                     {row.minTraitPrevalence !== null && row.maxTraitPrevalence !== null
                       ? `${(row.minTraitPrevalence * 100).toFixed(2)}% - ${(row.maxTraitPrevalence * 100).toFixed(2)}%`
                       : "n/a"}
