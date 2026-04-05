@@ -3,58 +3,143 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+interface IClassOracle {
+    function setValue(uint256 rightsId, uint256 value) external;
+    function getValue(uint256 rightsId) external view returns (uint256);
+}
+
 /**
  * @title OracleRegistry
- * @dev Sepolia oracle for NFT-backed credit risk, panic, and dynamic LTV.
+ * @dev Registry for mint-right valuation with strict NORMAL/RARE oracle separation.
  */
 contract OracleRegistry is Ownable {
-    uint256 public constant SPECIAL_TOKEN_ID =
-        0x000c06d6a17eb208a9bc7bd698eb6f22379209e3a4;
+    enum NFTType {
+        NORMAL,
+        RARE
+    }
 
-    uint256 public constant MIN_VALUE = 10_000_000 ether;
-    uint256 public constant MAX_VALUE = 25_000_000 ether;
+    uint256 public constant MAX_VALUE = 1_000_000_000 ether;
 
-    mapping(uint256 => uint256) public tokenValue;
-    mapping(uint256 => bool) public provenanceValid;
-    mapping(uint256 => bool) public tokenInPanic;
+    struct RightRisk {
+        NFTType nftType;
+        bool typeSet;
+        bool provenanceValid;
+        bool inPanic;
+    }
+
+    mapping(uint256 => RightRisk) private _risk;
 
     bool public trademarkValid;
     uint256 private _volatilityIndex;
 
-    event TokenValueUpdated(uint256 indexed tokenId, uint256 value);
+    IClassOracle public normalOracle;
+    IClassOracle public rareOracle;
+
+    event OracleContractsUpdated(address indexed normalOracle, address indexed rareOracle);
+    event RightTypeUpdated(uint256 indexed rightsId, NFTType nftType);
+    event OracleValueUpdated(uint256 indexed rightsId, uint256 value, NFTType nftType);
     event VolatilityUpdated(uint256 volatilityIndex);
     event TrademarkStatusUpdated(bool isValid);
-    event ProvenanceUpdated(uint256 indexed tokenId, bool isValid);
-    event PanicTriggered(uint256 indexed tokenId);
-    event PanicResolved(uint256 indexed tokenId);
-    event LTVUpdated(uint256 indexed tokenId, uint256 newLTV);
+    event ProvenanceUpdated(uint256 indexed rightsId, bool isValid);
+    event PanicTriggered(uint256 indexed rightsId);
+    event PanicResolved(uint256 indexed rightsId);
+    event LTVUpdated(uint256 indexed rightsId, uint256 newLTV);
 
-    constructor(address initialOwner) Ownable(initialOwner) {
+    constructor(address initialOwner, address normalOracleAddress, address rareOracleAddress) Ownable(initialOwner) {
+        require(normalOracleAddress != address(0), "Invalid normal oracle");
+        require(rareOracleAddress != address(0), "Invalid rare oracle");
+
+        normalOracle = IClassOracle(normalOracleAddress);
+        rareOracle = IClassOracle(rareOracleAddress);
+
         trademarkValid = true;
         _volatilityIndex = 10;
-        provenanceValid[SPECIAL_TOKEN_ID] = true;
-        tokenValue[SPECIAL_TOKEN_ID] = MIN_VALUE;
     }
 
-    function setTokenValue(
-        uint256 tokenId,
-        uint256 value
-    ) external onlyOwner {
+    function setOracleContracts(address normalOracleAddress, address rareOracleAddress) external onlyOwner {
+        require(normalOracleAddress != address(0), "Invalid normal oracle");
+        require(rareOracleAddress != address(0), "Invalid rare oracle");
+
+        normalOracle = IClassOracle(normalOracleAddress);
+        rareOracle = IClassOracle(rareOracleAddress);
+
+        emit OracleContractsUpdated(normalOracleAddress, rareOracleAddress);
+    }
+
+    function setRightType(uint256 rightsId, NFTType nftType) external onlyOwner {
+        RightRisk storage r = _risk[rightsId];
+        if (r.typeSet) {
+            require(r.nftType == nftType, "Type already fixed");
+            return;
+        }
+
+        r.nftType = nftType;
+        r.typeSet = true;
+        emit RightTypeUpdated(rightsId, nftType);
+    }
+
+    function rightTypeOf(uint256 rightsId) external view returns (NFTType) {
+        require(_risk[rightsId].typeSet, "Type not set");
+        return _risk[rightsId].nftType;
+    }
+
+    function setTokenValue(uint256 rightsId, uint256 value) external onlyOwner {
         require(value <= MAX_VALUE, "Value above MAX");
-        tokenValue[tokenId] = value;
-        emit TokenValueUpdated(tokenId, value);
-        emit LTVUpdated(tokenId, getDynamicMaxLTV(tokenId));
+        require(_risk[rightsId].typeSet, "Type not set");
+
+        if (_risk[rightsId].nftType == NFTType.RARE) {
+            rareOracle.setValue(rightsId, value);
+            emit OracleValueUpdated(rightsId, value, NFTType.RARE);
+        } else {
+            normalOracle.setValue(rightsId, value);
+            emit OracleValueUpdated(rightsId, value, NFTType.NORMAL);
+        }
+
+        emit LTVUpdated(rightsId, getDynamicMaxLTV(rightsId));
     }
 
-    function getLiquidationValue(uint256 tokenId) external view returns (uint256) {
-        return tokenValue[tokenId];
+    function setOracleData(
+        uint256 rightsId,
+        uint256 value,
+        uint256 volatility,
+        bool isTrademarkValidValue,
+        bool isProvenanceValidValue,
+        NFTType nftType
+    ) external onlyOwner {
+        // Type is immutable once set, preventing accidental NORMAL/RARE oracle flips.
+        require(value <= MAX_VALUE, "Value above MAX");
+        require(volatility <= 100, "Volatility out of range");
+
+        RightRisk storage r = _risk[rightsId];
+        if (r.typeSet) {
+            require(r.nftType == nftType, "Type already fixed");
+        } else {
+            r.nftType = nftType;
+            r.typeSet = true;
+            emit RightTypeUpdated(rightsId, nftType);
+        }
+
+        if (nftType == NFTType.RARE) {
+            rareOracle.setValue(rightsId, value);
+        } else {
+            normalOracle.setValue(rightsId, value);
+        }
+
+        _volatilityIndex = volatility;
+        trademarkValid = isTrademarkValidValue;
+        r.provenanceValid = isProvenanceValidValue;
+
+        emit OracleValueUpdated(rightsId, value, nftType);
+        emit VolatilityUpdated(volatility);
+        emit TrademarkStatusUpdated(isTrademarkValidValue);
+        emit ProvenanceUpdated(rightsId, isProvenanceValidValue);
+        emit LTVUpdated(rightsId, getDynamicMaxLTV(rightsId));
     }
 
     function setVolatility(uint256 newVolatility) external onlyOwner {
         require(newVolatility <= 100, "Volatility out of range");
         _volatilityIndex = newVolatility;
         emit VolatilityUpdated(newVolatility);
-        emit LTVUpdated(SPECIAL_TOKEN_ID, getDynamicMaxLTV(SPECIAL_TOKEN_ID));
     }
 
     function setTrademarkStatus(bool isValid) external onlyOwner {
@@ -62,78 +147,82 @@ contract OracleRegistry is Ownable {
         emit TrademarkStatusUpdated(isValid);
     }
 
-    function setProvenance(
-        uint256 tokenId,
-        bool isValid
-    ) external onlyOwner {
-        provenanceValid[tokenId] = isValid;
-        emit ProvenanceUpdated(tokenId, isValid);
+    function setProvenance(uint256 rightsId, bool isValid) external onlyOwner {
+        _risk[rightsId].provenanceValid = isValid;
+        emit ProvenanceUpdated(rightsId, isValid);
     }
 
-    function setOracleData(
-        uint256 tokenId,
-        uint256 value,
-        uint256 volatility,
-        bool isTrademarkValidValue,
-        bool isProvenanceValidValue
-    ) external onlyOwner {
-        require(value <= MAX_VALUE, "Value above MAX");
-        require(volatility <= 100, "Volatility out of range");
-
-        tokenValue[tokenId] = value;
-        _volatilityIndex = volatility;
-        trademarkValid = isTrademarkValidValue;
-        provenanceValid[tokenId] = isProvenanceValidValue;
-
-        emit TokenValueUpdated(tokenId, value);
-        emit VolatilityUpdated(volatility);
-        emit TrademarkStatusUpdated(isTrademarkValidValue);
-        emit ProvenanceUpdated(tokenId, isProvenanceValidValue);
-        emit LTVUpdated(tokenId, getDynamicMaxLTV(tokenId));
-    }
-
-    function checkAndUpdatePanic(uint256 tokenId) external returns (bool) {
-        bool shouldPanic = getRiskStatus(tokenId);
-        if (shouldPanic && !tokenInPanic[tokenId]) {
-            tokenInPanic[tokenId] = true;
-            emit PanicTriggered(tokenId);
-        } else if (!shouldPanic && tokenInPanic[tokenId]) {
-            tokenInPanic[tokenId] = false;
-            emit PanicResolved(tokenId);
+    function getFloorValue(uint256 rightsId) public view returns (uint256) {
+        RightRisk memory r = _risk[rightsId];
+        if (!r.typeSet) {
+            return 0;
         }
 
-        emit LTVUpdated(tokenId, getDynamicMaxLTV(tokenId));
-        return tokenInPanic[tokenId];
-    }
-
-    function resolveTokenPanic(uint256 tokenId) external onlyOwner {
-        tokenInPanic[tokenId] = false;
-        emit PanicResolved(tokenId);
-        emit LTVUpdated(tokenId, getDynamicMaxLTV(tokenId));
-    }
-
-    function getFloorValue(uint256 tokenId) public view returns (uint256) {
-        uint256 value = tokenValue[tokenId];
-        if (tokenId == SPECIAL_TOKEN_ID && value == 0) {
-            return MIN_VALUE;
+        if (r.nftType == NFTType.RARE) {
+            return rareOracle.getValue(rightsId);
         }
-        return value;
+
+        return normalOracle.getValue(rightsId);
     }
 
-    function getRiskStatus(uint256 tokenId) public view returns (bool) {
-        bool valuationRisk = tokenId == SPECIAL_TOKEN_ID && getFloorValue(tokenId) < MIN_VALUE;
-        return valuationRisk || !isTrademarkValid(tokenId) || !isProvenanceValid(tokenId);
+    function validateOraclePath(uint256 rightsId, NFTType expectedType) public view returns (bool) {
+        RightRisk memory r = _risk[rightsId];
+        require(r.typeSet, "Type not set");
+        return r.nftType == expectedType;
+    }
+
+    function checkAndUpdatePanic(uint256 rightsId) external returns (bool) {
+        bool shouldPanic = getRiskStatus(rightsId);
+        RightRisk storage r = _risk[rightsId];
+
+        if (shouldPanic && !r.inPanic) {
+            r.inPanic = true;
+            emit PanicTriggered(rightsId);
+        } else if (!shouldPanic && r.inPanic) {
+            r.inPanic = false;
+            emit PanicResolved(rightsId);
+        }
+
+        emit LTVUpdated(rightsId, getDynamicMaxLTV(rightsId));
+        return r.inPanic;
+    }
+
+    function resolveTokenPanic(uint256 rightsId) external onlyOwner {
+        _risk[rightsId].inPanic = false;
+        emit PanicResolved(rightsId);
+        emit LTVUpdated(rightsId, getDynamicMaxLTV(rightsId));
+    }
+
+    function getRiskStatus(uint256 rightsId) public view returns (bool) {
+        RightRisk memory r = _risk[rightsId];
+        if (!r.typeSet) {
+            return true;
+        }
+
+        uint256 routedValue = getFloorValue(rightsId);
+        bool badPricing = routedValue == 0 || routedValue > MAX_VALUE;
+        bool dataRisk = !trademarkValid || !r.provenanceValid;
+
+        return badPricing || dataRisk || r.inPanic;
+    }
+
+    function getLiquidationValue(uint256 rightsId) external view returns (uint256) {
+        return getFloorValue(rightsId);
     }
 
     function isTrademarkValid(uint256) public view returns (bool) {
         return trademarkValid;
     }
 
-    function isProvenanceValid(uint256 tokenId) public view returns (bool) {
-        return provenanceValid[tokenId];
+    function isProvenanceValid(uint256 rightsId) public view returns (bool) {
+        return _risk[rightsId].provenanceValid;
     }
 
-    function getDynamicMaxLTV(uint256 tokenId) public view returns (uint256) {
+    function isPanic(uint256 rightsId) public view returns (bool) {
+        return _risk[rightsId].inPanic;
+    }
+
+    function getDynamicMaxLTV(uint256 rightsId) public view returns (uint256) {
         uint256 vol = volatilityIndex();
         uint256 maxLTV;
 
@@ -147,7 +236,7 @@ contract OracleRegistry is Ownable {
             maxLTV = 6_000;
         }
 
-        if (tokenInPanic[tokenId]) {
+        if (_risk[rightsId].inPanic) {
             return 0;
         }
 

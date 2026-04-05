@@ -7,16 +7,27 @@ async function main() {
 
   console.log("Local deployer:", deployer.address);
 
-  const MockNFT = await hre.ethers.getContractFactory("MockNFT");
-  const nft = await MockNFT.deploy();
-  await nft.waitForDeployment();
+  const RegularOracle = await hre.ethers.getContractFactory("RegularOracle");
+  const normalOracle = await RegularOracle.deploy(deployer.address);
+  await normalOracle.waitForDeployment();
+
+  const RareOracle = await hre.ethers.getContractFactory("RareOracle");
+  const rareOracle = await RareOracle.deploy(deployer.address);
+  await rareOracle.waitForDeployment();
 
   const OracleRegistry = await hre.ethers.getContractFactory("OracleRegistry");
-  const oracle = await OracleRegistry.deploy(deployer.address);
+  const oracle = await OracleRegistry.deploy(
+    deployer.address,
+    await normalOracle.getAddress(),
+    await rareOracle.getAddress()
+  );
   await oracle.waitForDeployment();
 
+  await (await normalOracle.transferOwnership(await oracle.getAddress())).wait();
+  await (await rareOracle.transferOwnership(await oracle.getAddress())).wait();
+
   const Vault = await hre.ethers.getContractFactory("Vault");
-  const vault = await Vault.deploy(await nft.getAddress(), deployer.address);
+  const vault = await Vault.deploy(9300, deployer.address);
   await vault.waitForDeployment();
 
   const LoanEngine = await hre.ethers.getContractFactory("LoanEngine");
@@ -31,17 +42,18 @@ async function main() {
   await (await vault.setOracle(await oracle.getAddress())).wait();
   await (await loan.setRevenueRouter(await router.getAddress())).wait();
 
-  await (await nft.mint(deployer.address, 1)).wait();
-
   await (
     await oracle.setOracleData(
       1,
       hre.ethers.parseEther("10"),
       20,
       true,
-      true
+      true,
+      0
     )
   ).wait();
+
+  await (await vault.lockMintRight(1, 0, deployer.address)).wait();
 
   await (await router.setBeneficiary(1, deployer.address)).wait();
 
@@ -54,7 +66,8 @@ async function main() {
     network: hre.network.name,
     rpc: "http://127.0.0.1:8545",
     deployer: deployer.address,
-    nft: await nft.getAddress(),
+    normalOracle: await normalOracle.getAddress(),
+    rareOracle: await rareOracle.getAddress(),
     oracle: await oracle.getAddress(),
     vault: await vault.getAddress(),
     loan: await loan.getAddress(),
@@ -78,8 +91,7 @@ async function main() {
     `NEXT_PUBLIC_ORACLE_ADDRESS=${deployment.oracle}`,
     `NEXT_PUBLIC_VAULT_ADDRESS=${deployment.vault}`,
     `NEXT_PUBLIC_LOAN_ENGINE_ADDRESS=${deployment.loan}`,
-    `NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS=${deployment.router}`,
-    `NEXT_PUBLIC_NFT_CONTRACT=${deployment.nft}`
+    `NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS=${deployment.router}`
   ].join("\n");
 
   fs.writeFileSync(frontendEnvPath, `${frontendEnv}\n`);

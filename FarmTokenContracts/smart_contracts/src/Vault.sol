@@ -2,52 +2,73 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 interface ILoanDebtView {
-    function outstandingDebt(uint256 tokenId) external view returns (uint256);
+    function outstandingDebt(uint256 rightsId) external view returns (uint256);
 }
 
 interface IOracleFloorView {
-    function getFloorValue(uint256 tokenId) external view returns (uint256);
+    function getFloorValue(uint256 rightsId) external view returns (uint256);
+    function validateOraclePath(uint256 rightsId, uint8 expectedType) external view returns (bool);
 }
 
 /**
  * @title Vault
- * @dev Private NFT locking vault controlled by owner-only operations.
+ * @dev Stores locked minting rights as collateral without minting or transferring NFTs.
  */
-contract Vault is AccessControl, ERC721Holder, ReentrancyGuard {
+contract Vault is AccessControl, ReentrancyGuard {
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
-    bytes32 public constant OWNER_ROLE = keccak256("OWNER_ROLE");
 
-    IERC721 public immutable nftCollection;
+    enum NFTType {
+        NORMAL,
+        RARE
+    }
+
+    uint256 public immutable maxRightsSupply;
+
+    struct MirrorRow {
+        uint256 rightsId;
+        bool isLocked;
+        address locker;
+        bool typeSet;
+        NFTType nftType;
+        uint256 oracleValue;
+        uint256 snapshotValue;
+        uint256 debt;
+        uint256 ltvBps;
+    }
+
     ILoanDebtView public loanEngine;
     IOracleFloorView public oracle;
 
     mapping(uint256 => address) public lockedBy;
+    mapping(address => uint256) public lockedRightsCount;
+    mapping(address => uint256[]) private _lockedRightsByOwner;
+    mapping(uint256 => uint256) private _ownerIndexPlusOne;
     mapping(uint256 => uint256) public snapshotValue;
-    uint256[] private _lockedTokenIds;
+    mapping(uint256 => NFTType) private _rightType;
+    mapping(uint256 => bool) private _rightTypeSet;
+
+    uint256[] private _lockedRightsIds;
     mapping(uint256 => uint256) private _lockedIndexPlusOne;
 
     event LoanEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
-    event NFTDeposited(uint256 indexed tokenId, address indexed depositor);
-    event NFTWithdrawn(uint256 indexed tokenId, address indexed receiver);
-    event SnapshotCaptured(uint256 indexed tokenId, uint256 value);
+    event RightLocked(uint256 indexed rightsId, address indexed locker, NFTType nftType);
+    event RightUnlocked(uint256 indexed rightsId, address indexed receiver);
+    event SnapshotCaptured(uint256 indexed rightsId, uint256 value);
 
-    constructor(address nftAddress, address admin) {
-        require(nftAddress != address(0), "Invalid NFT address");
+    constructor(uint256 totalRightsSupply, address admin) {
+        require(totalRightsSupply > 0, "Invalid rights supply");
         require(admin != address(0), "Invalid admin");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
         _grantRole(OPERATOR_ROLE, admin);
-        _grantRole(OWNER_ROLE, admin);
 
-        nftCollection = IERC721(nftAddress);
+        maxRightsSupply = totalRightsSupply;
     }
 
     function setLoanEngine(address loanEngineAddress) external onlyRole(ADMIN_ROLE) {
@@ -64,66 +85,171 @@ contract Vault is AccessControl, ERC721Holder, ReentrancyGuard {
         emit OracleUpdated(oldOracle, oracleAddress);
     }
 
-    function depositNFT(uint256 tokenId) external onlyRole(OWNER_ROLE) nonReentrant {
-        require(lockedBy[tokenId] == address(0), "Already locked");
+    function lockMintRight(
+        uint256 rightsId,
+        NFTType nftType,
+        address locker
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        require(rightsId > 0 && rightsId <= maxRightsSupply, "Invalid rightsId");
+        require(locker != address(0), "Invalid locker");
+        require(lockedBy[rightsId] == address(0), "Already locked");
         require(address(oracle) != address(0), "Oracle not configured");
+        require(oracle.validateOraclePath(rightsId, uint8(nftType)), "Oracle/type mismatch");
 
-        nftCollection.safeTransferFrom(msg.sender, address(this), tokenId);
-        lockedBy[tokenId] = msg.sender;
-        snapshotValue[tokenId] = oracle.getFloorValue(tokenId);
-        require(snapshotValue[tokenId] > 0, "Snapshot value is zero");
-        _lockedTokenIds.push(tokenId);
-        _lockedIndexPlusOne[tokenId] = _lockedTokenIds.length;
+        uint256 snap = oracle.getFloorValue(rightsId);
+        require(snap > 0, "Snapshot value is zero");
 
-        emit SnapshotCaptured(tokenId, snapshotValue[tokenId]);
-        emit NFTDeposited(tokenId, msg.sender);
+        lockedBy[rightsId] = locker;
+        lockedRightsCount[locker] += 1;
+        snapshotValue[rightsId] = snap;
+        _rightType[rightsId] = nftType;
+        _rightTypeSet[rightsId] = true;
+
+        _lockedRightsByOwner[locker].push(rightsId);
+        _ownerIndexPlusOne[rightsId] = _lockedRightsByOwner[locker].length;
+
+        _lockedRightsIds.push(rightsId);
+        _lockedIndexPlusOne[rightsId] = _lockedRightsIds.length;
+
+        emit SnapshotCaptured(rightsId, snap);
+        emit RightLocked(rightsId, locker, nftType);
     }
 
-    function withdrawNFT(
-        uint256 tokenId,
+    function unlockMintRight(
+        uint256 rightsId,
         address receiver
-    ) external onlyRole(OWNER_ROLE) nonReentrant {
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
         require(receiver != address(0), "Invalid receiver");
-        require(lockedBy[tokenId] != address(0), "Not locked");
+        require(lockedBy[rightsId] != address(0), "Not locked");
         require(address(loanEngine) != address(0), "Loan engine not configured");
-        require(loanEngine.outstandingDebt(tokenId) == 0, "Debt outstanding");
+        require(loanEngine.outstandingDebt(rightsId) == 0, "Debt outstanding");
 
-        delete lockedBy[tokenId];
-        delete snapshotValue[tokenId];
-        _removeLockedToken(tokenId);
-        nftCollection.safeTransferFrom(address(this), receiver, tokenId);
+        address locker = lockedBy[rightsId];
+        if (lockedRightsCount[locker] > 0) {
+            lockedRightsCount[locker] -= 1;
+        }
 
-        emit NFTWithdrawn(tokenId, receiver);
+        _removeOwnerRight(locker, rightsId);
+
+        delete lockedBy[rightsId];
+        delete snapshotValue[rightsId];
+        delete _rightType[rightsId];
+        delete _rightTypeSet[rightsId];
+
+        _removeLockedRight(rightsId);
+        emit RightUnlocked(rightsId, receiver);
     }
 
-    function isLocked(uint256 tokenId) external view returns (bool) {
-        return lockedBy[tokenId] != address(0);
+    function isLocked(uint256 rightsId) external view returns (bool) {
+        return lockedBy[rightsId] != address(0);
     }
 
-    function getLockedTokenIds() external view returns (uint256[] memory) {
-        return _lockedTokenIds;
+    function getLockedRightIds() external view returns (uint256[] memory) {
+        return _lockedRightsIds;
     }
 
-    function getSnapshotValue(uint256 tokenId) external view returns (uint256) {
-        return snapshotValue[tokenId];
+    function getLockedRightsByWallet(address owner) external view returns (uint256[] memory) {
+        return _lockedRightsByOwner[owner];
     }
 
-    function _removeLockedToken(uint256 tokenId) internal {
-        uint256 idxPlusOne = _lockedIndexPlusOne[tokenId];
+    function rightTypeOf(uint256 rightsId) external view returns (NFTType) {
+        require(_rightTypeSet[rightsId], "Type not set");
+        return _rightType[rightsId];
+    }
+
+    function getSnapshotValue(uint256 rightsId) external view returns (uint256) {
+        return snapshotValue[rightsId];
+    }
+
+    /**
+     * @dev Mirrors collateral state for a batch of rights IDs so frontends can build
+     *      a full 9,300-right valuation table without write operations.
+     */
+    function getMirrorRange(uint256 startId, uint256 endId) external view returns (MirrorRow[] memory rows) {
+        require(startId > 0, "startId out of range");
+        require(endId >= startId, "Invalid range");
+        require(endId <= maxRightsSupply, "endId out of range");
+
+        uint256 length = endId - startId + 1;
+        rows = new MirrorRow[](length);
+
+        bool hasOracle = address(oracle) != address(0);
+        bool hasLoan = address(loanEngine) != address(0);
+
+        for (uint256 i = 0; i < length; i++) {
+            uint256 rightsId = startId + i;
+            address owner = lockedBy[rightsId];
+            bool isLockedRight = owner != address(0);
+            bool typeSet = _rightTypeSet[rightsId];
+            NFTType rightType = typeSet ? _rightType[rightsId] : NFTType.NORMAL;
+
+            uint256 oracleValue = 0;
+            if (hasOracle && typeSet) {
+                oracleValue = oracle.getFloorValue(rightsId);
+            }
+
+            uint256 snap = snapshotValue[rightsId];
+
+            uint256 debt = 0;
+            if (hasLoan && isLockedRight) {
+                debt = loanEngine.outstandingDebt(rightsId);
+            }
+
+            uint256 ltv = 0;
+            if (snap > 0 && debt > 0) {
+                ltv = (debt * 10_000) / snap;
+            }
+
+            rows[i] = MirrorRow({
+                rightsId: rightsId,
+                isLocked: isLockedRight,
+                locker: owner,
+                typeSet: typeSet,
+                nftType: rightType,
+                oracleValue: oracleValue,
+                snapshotValue: snap,
+                debt: debt,
+                ltvBps: ltv
+            });
+        }
+    }
+
+    function _removeOwnerRight(address owner, uint256 rightsId) internal {
+        uint256 idxPlusOne = _ownerIndexPlusOne[rightsId];
         if (idxPlusOne == 0) {
             return;
         }
 
         uint256 idx = idxPlusOne - 1;
-        uint256 lastIdx = _lockedTokenIds.length - 1;
+        uint256[] storage owned = _lockedRightsByOwner[owner];
+        uint256 lastIdx = owned.length - 1;
 
         if (idx != lastIdx) {
-            uint256 lastTokenId = _lockedTokenIds[lastIdx];
-            _lockedTokenIds[idx] = lastTokenId;
-            _lockedIndexPlusOne[lastTokenId] = idx + 1;
+            uint256 lastRightsId = owned[lastIdx];
+            owned[idx] = lastRightsId;
+            _ownerIndexPlusOne[lastRightsId] = idx + 1;
         }
 
-        _lockedTokenIds.pop();
-        delete _lockedIndexPlusOne[tokenId];
+        owned.pop();
+        delete _ownerIndexPlusOne[rightsId];
+    }
+
+    function _removeLockedRight(uint256 rightsId) internal {
+        uint256 idxPlusOne = _lockedIndexPlusOne[rightsId];
+        if (idxPlusOne == 0) {
+            return;
+        }
+
+        uint256 idx = idxPlusOne - 1;
+        uint256 lastIdx = _lockedRightsIds.length - 1;
+
+        if (idx != lastIdx) {
+            uint256 lastRightsId = _lockedRightsIds[lastIdx];
+            _lockedRightsIds[idx] = lastRightsId;
+            _lockedIndexPlusOne[lastRightsId] = idx + 1;
+        }
+
+        _lockedRightsIds.pop();
+        delete _lockedIndexPlusOne[rightsId];
     }
 }

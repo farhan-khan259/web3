@@ -5,16 +5,27 @@ describe("Institutional NFT Credit Engine MVP", function () {
   async function deployFixture() {
     const [admin, operator, reserve, user] = await ethers.getSigners();
 
-    const MockNFT = await ethers.getContractFactory("MockNFT");
-    const nft = await MockNFT.deploy();
-    await nft.waitForDeployment();
+    const RegularOracle = await ethers.getContractFactory("RegularOracle");
+    const normalOracle = await RegularOracle.deploy(admin.address);
+    await normalOracle.waitForDeployment();
+
+    const RareOracle = await ethers.getContractFactory("RareOracle");
+    const rareOracle = await RareOracle.deploy(admin.address);
+    await rareOracle.waitForDeployment();
 
     const OracleRegistry = await ethers.getContractFactory("OracleRegistry");
-    const oracle = await OracleRegistry.deploy(admin.address);
+    const oracle = await OracleRegistry.deploy(
+      admin.address,
+      await normalOracle.getAddress(),
+      await rareOracle.getAddress()
+    );
     await oracle.waitForDeployment();
 
+    await (await normalOracle.transferOwnership(await oracle.getAddress())).wait();
+    await (await rareOracle.transferOwnership(await oracle.getAddress())).wait();
+
     const Vault = await ethers.getContractFactory("Vault");
-    const vault = await Vault.deploy(await nft.getAddress(), admin.address);
+    const vault = await Vault.deploy(9300, admin.address);
     await vault.waitForDeployment();
 
     const LoanEngine = await ethers.getContractFactory("LoanEngine");
@@ -42,13 +53,8 @@ describe("Institutional NFT Credit Engine MVP", function () {
     const ROUTER_OPERATOR_ROLE = await router.OPERATOR_ROLE();
     await (await router.grantRole(ROUTER_OPERATOR_ROLE, operator.address)).wait();
 
-    await (await nft.mint(admin.address, 1)).wait();
-    await (await oracle.setTokenValue(1, ethers.parseEther("20"))).wait();
-    await (await oracle.setProvenance(1, true)).wait();
-    await (await oracle.setTrademarkStatus(true)).wait();
-    await (await oracle.setVolatility(10)).wait();
-    await (await nft.approve(await vault.getAddress(), 1)).wait();
-    await (await vault.depositNFT(1)).wait();
+    await (await oracle.setOracleData(1, ethers.parseEther("20"), 10, true, true, 0)).wait();
+    await (await vault.lockMintRight(1, 0, admin.address)).wait();
 
     await admin.sendTransaction({
       to: await loan.getAddress(),
@@ -80,10 +86,10 @@ describe("Institutional NFT Credit Engine MVP", function () {
     const { operator, loan } = await deployFixture();
 
     await expect(
-      loan.connect(operator).borrow(1, ethers.parseEther("16"))
+      loan.connect(operator).borrow(1, 0, ethers.parseEther("16"))
     ).to.be.revertedWith("LTV cap exceeded");
 
-    await expect(loan.connect(operator).borrow(1, ethers.parseEther("10")))
+    await expect(loan.connect(operator).borrow(1, 0, ethers.parseEther("10")))
       .to.emit(loan, "Borrow")
       .withArgs(1, ethers.parseEther("10"));
 
@@ -104,7 +110,7 @@ describe("Institutional NFT Credit Engine MVP", function () {
   it("routes revenue with 70% debt and 30% beneficiary in normal mode", async function () {
     const { operator, user, loan, router } = await deployFixture();
 
-    await (await loan.connect(operator).borrow(1, ethers.parseEther("5"))).wait();
+    await (await loan.connect(operator).borrow(1, 0, ethers.parseEther("5"))).wait();
 
     const userBefore = await ethers.provider.getBalance(user.address);
 
