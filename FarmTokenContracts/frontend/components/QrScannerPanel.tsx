@@ -2,14 +2,12 @@
 
 import jsQR from "jsqr";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { parseQrPayload } from "../lib/contracts";
 
 type Props = {
   onWalletDetected?: (wallet: string) => void;
-  onRightsDetected?: (rightsId: string) => void;
 };
 
-export default function QrScannerPanel({ onWalletDetected, onRightsDetected }: Props) {
+export default function QrScannerPanel({ onWalletDetected }: Props) {
   const [status, setStatus] = useState("Scanner idle");
   const [expanded, setExpanded] = useState(false);
   const [manualPayload, setManualPayload] = useState("");
@@ -20,20 +18,20 @@ export default function QrScannerPanel({ onWalletDetected, onRightsDetected }: P
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
 
-  function applyPayload(raw: string, source: string) {
-    const parsed = parseQrPayload(raw);
-    if (parsed.wallet && onWalletDetected) onWalletDetected(parsed.wallet);
-    if (parsed.rightsId && onRightsDetected) onRightsDetected(parsed.rightsId);
+  function parseWalletFromQr(raw: string): string | null {
+    const match = raw.trim().match(/0x[a-fA-F0-9]{40}/);
+    return match?.[0] || null;
+  }
 
-    if (!parsed.wallet && !parsed.rightsId) {
-      setStatus(`${source}: no wallet/rights found`);
+  function applyPayload(raw: string, source: string) {
+    const wallet = parseWalletFromQr(raw);
+    if (!wallet) {
+      setStatus(`${source}: no wallet found`);
       return;
     }
 
-    const parts: string[] = [];
-    if (parsed.wallet) parts.push("wallet");
-    if (parsed.rightsId) parts.push("rights");
-    setStatus(`${source}: parsed ${parts.join(" + ")}`);
+    if (onWalletDetected) onWalletDetected(wallet);
+    setStatus(`${source}: wallet parsed`);
   }
 
   function stopCamera() {
@@ -176,19 +174,19 @@ export default function QrScannerPanel({ onWalletDetected, onRightsDetected }: P
   }, []);
 
   return (
-    <div className="w-full rounded-md border border-slate-800 bg-slate-950/60 p-3">
+    <div className="w-full mirror-panel" style={{ padding: "0.75rem" }}>
       <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={() => {
             setExpanded((v) => !v);
             setStatus("Scanner panel opened");
           }}
-          className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-200"
+          className="mirror-btn"
           type="button"
         >
-        QR Scan
+          QR Scan
         </button>
-        <span className="text-xs text-slate-400">{status}</span>
+        <span className="text-xs mirror-muted">{status}</span>
       </div>
 
       {expanded && (
@@ -197,41 +195,41 @@ export default function QrScannerPanel({ onWalletDetected, onRightsDetected }: P
             <button
               type="button"
               onClick={startCameraScan}
-              className="rounded-md border border-slate-700 px-3 py-2 text-xs"
+              className="mirror-btn"
             >
               Start Camera
             </button>
             <button
               type="button"
               onClick={stopCamera}
-              className="rounded-md border border-slate-700 px-3 py-2 text-xs"
+              className="mirror-btn"
             >
               Stop Camera
             </button>
-            <label className="cursor-pointer rounded-md border border-slate-700 px-3 py-2 text-xs">
+            <label className="cursor-pointer mirror-btn">
               Upload QR Image
               <input type="file" accept="image/*" className="hidden" onChange={onUploadImage} />
             </label>
-            <span className="text-xs text-slate-500">{scanning ? "Camera active" : "Camera idle"}</span>
+            <span className="text-xs mirror-muted">{scanning ? "Camera active" : "Camera idle"}</span>
           </div>
 
           <video ref={videoRef} className="w-full max-w-sm rounded border border-slate-800 bg-black" muted playsInline />
           <canvas ref={canvasRef} className="hidden" />
 
           <div className="space-y-2">
-            <label className="block text-xs text-slate-400">Manual QR Payload</label>
+            <label className="block text-xs mirror-muted">Manual Wallet QR Payload</label>
             <textarea
               value={manualPayload}
               onChange={(e) => setManualPayload(e.target.value)}
               placeholder="Paste raw QR payload here"
-              className="min-h-20 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs"
+              className="min-h-20 w-full mirror-input text-xs"
             />
             <button
               type="button"
               onClick={onParseManual}
-              className="rounded-md border border-slate-700 px-3 py-2 text-xs"
+              className="mirror-btn"
             >
-              Parse Payload
+              Parse Wallet
             </button>
           </div>
         </div>

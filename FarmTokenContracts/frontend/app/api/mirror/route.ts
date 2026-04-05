@@ -1,5 +1,6 @@
 import { isAddress } from "ethers";
 import { NextRequest, NextResponse } from "next/server";
+import { getCollectionAllowlist, getProviderNetwork } from "../../../lib/contracts";
 
 enum NFTType {
   NORMAL = "NORMAL",
@@ -48,10 +49,15 @@ function toDecimalTokenId(tokenId: string): string {
 
 async function fetchOwnedNftsFromAlchemy(walletAddress: string): Promise<OwnedNft[]> {
   const apiKey = process.env.ALCHEMY_API_KEY || "demo";
-  const network = process.env.ALCHEMY_NFT_NETWORK || "eth-mainnet";
+  const network = getProviderNetwork();
+
+  if (!network) {
+    throw new Error("ALCHEMY_NFT_NETWORK is missing for the active network mode");
+  }
 
   const base = `https://${network}.g.alchemy.com/nft/v3/${apiKey}`;
   const owned: OwnedNft[] = [];
+  const allowlist = new Set(getCollectionAllowlist());
 
   let pageKey: string | undefined;
   for (;;) {
@@ -73,6 +79,8 @@ async function fetchOwnedNftsFromAlchemy(walletAddress: string): Promise<OwnedNf
       const contractAddress = String(nft?.contractAddress || nft?.contract?.address || "").toLowerCase();
       const tokenIdRaw = String(nft?.tokenId || "");
       if (!contractAddress || !tokenIdRaw) continue;
+      if (Boolean(nft?.isSpam)) continue;
+      if (allowlist.size > 0 && !allowlist.has(contractAddress)) continue;
       owned.push({
         contractAddress,
         tokenId: toDecimalTokenId(tokenIdRaw),
@@ -88,7 +96,10 @@ async function fetchOwnedNftsFromAlchemy(walletAddress: string): Promise<OwnedNf
 
 async function fetchCollectionFloorEth(contractAddress: string): Promise<number | null> {
   const apiKey = process.env.ALCHEMY_API_KEY || "demo";
-  const network = process.env.ALCHEMY_NFT_NETWORK || "eth-mainnet";
+  const network = getProviderNetwork();
+  if (!network) {
+    throw new Error("ALCHEMY_NFT_NETWORK is missing for the active network mode");
+  }
   const url = new URL(`https://${network}.g.alchemy.com/nft/v3/${apiKey}/getFloorPrice`);
   url.searchParams.set("contractAddress", contractAddress);
 
@@ -106,7 +117,10 @@ async function fetchCollectionFloorEth(contractAddress: string): Promise<number 
 
 async function fetchAlchemyRarityData(contractAddress: string, tokenId: string): Promise<AlchemyRarityData> {
   const apiKey = process.env.ALCHEMY_API_KEY || "demo";
-  const network = process.env.ALCHEMY_NFT_NETWORK || "eth-mainnet";
+  const network = getProviderNetwork();
+  if (!network) {
+    throw new Error("ALCHEMY_NFT_NETWORK is missing for the active network mode");
+  }
   const url = new URL(`https://${network}.g.alchemy.com/nft/v3/${apiKey}/computeRarity`);
   url.searchParams.set("contractAddress", contractAddress);
   url.searchParams.set("tokenId", tokenId);
@@ -188,7 +202,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "ltvRatio must be between 0 and 1" }, { status: 400 });
     }
 
-    // NFT fetching: all NFTs are read from Alchemy owner inventory.
+    // NFT fetching and filtering: only allowlisted, non-spam NFTs are mirrored.
     const ownedNfts = await fetchOwnedNftsFromAlchemy(walletAddress);
     console.log("[MirrorAPI] ownedNFTCount", ownedNfts.length);
     if (ownedNfts.length > 0) {

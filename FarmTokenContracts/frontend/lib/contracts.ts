@@ -1,10 +1,52 @@
 import { Contract, JsonRpcProvider } from "ethers";
 
+type NetworkMode = "local" | "testnet" | "mainnet";
+
+function getNetworkMode(): NetworkMode {
+  const rawMode = (process.env.NEXT_PUBLIC_NETWORK_MODE || "local").toLowerCase();
+  if (rawMode === "mainnet" || rawMode === "testnet" || rawMode === "local") {
+    return rawMode;
+  }
+  return "local";
+}
+
+function resolvePublicByMode(
+  localValue: string | undefined,
+  testnetValue: string | undefined,
+  mainnetValue: string | undefined,
+  fallback: string | undefined = ""
+): string {
+  const mode = getNetworkMode();
+  if (mode === "local") return localValue || fallback || "";
+  if (mode === "testnet") return testnetValue || fallback || "";
+  return mainnetValue || fallback || "";
+}
+
 export const ADDRESSES = {
-  oracle: process.env.NEXT_PUBLIC_ORACLE_ADDRESS || "",
-  vault: process.env.NEXT_PUBLIC_VAULT_ADDRESS || "",
-  loan: process.env.NEXT_PUBLIC_LOAN_ENGINE_ADDRESS || "",
-  router: process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS || "",
+  oracle: resolvePublicByMode(
+    process.env.NEXT_PUBLIC_ORACLE_ADDRESS_LOCAL,
+    process.env.NEXT_PUBLIC_ORACLE_ADDRESS_TESTNET,
+    process.env.NEXT_PUBLIC_ORACLE_ADDRESS_MAINNET,
+    process.env.NEXT_PUBLIC_ORACLE_ADDRESS
+  ),
+  vault: resolvePublicByMode(
+    process.env.NEXT_PUBLIC_VAULT_ADDRESS_LOCAL,
+    process.env.NEXT_PUBLIC_VAULT_ADDRESS_TESTNET,
+    process.env.NEXT_PUBLIC_VAULT_ADDRESS_MAINNET,
+    process.env.NEXT_PUBLIC_VAULT_ADDRESS
+  ),
+  loan: resolvePublicByMode(
+    process.env.NEXT_PUBLIC_LOAN_ENGINE_ADDRESS_LOCAL,
+    process.env.NEXT_PUBLIC_LOAN_ENGINE_ADDRESS_TESTNET,
+    process.env.NEXT_PUBLIC_LOAN_ENGINE_ADDRESS_MAINNET,
+    process.env.NEXT_PUBLIC_LOAN_ENGINE_ADDRESS
+  ),
+  router: resolvePublicByMode(
+    process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS_LOCAL,
+    process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS_TESTNET,
+    process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS_MAINNET,
+    process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS
+  ),
 };
 
 export const oracleAbi = [
@@ -50,11 +92,36 @@ export function hasAllAddresses(): boolean {
 }
 
 export function getReadProvider(): JsonRpcProvider {
-  const rpc = process.env.NEXT_PUBLIC_RPC_URL;
+  const rpc = resolvePublicByMode(
+    process.env.NEXT_PUBLIC_RPC_URL_LOCAL,
+    process.env.NEXT_PUBLIC_RPC_URL_TESTNET,
+    process.env.NEXT_PUBLIC_RPC_URL_MAINNET,
+    process.env.NEXT_PUBLIC_RPC_URL
+  );
   if (!rpc) {
-    throw new Error("NEXT_PUBLIC_RPC_URL missing");
+    throw new Error("NEXT_PUBLIC_RPC_URL missing for active network mode");
   }
   return new JsonRpcProvider(rpc);
+}
+
+export function getProviderNetwork(): string {
+  const mode = getNetworkMode();
+  if (mode === "local") return process.env.ALCHEMY_NFT_NETWORK_LOCAL || process.env.ALCHEMY_NFT_NETWORK || "";
+  if (mode === "testnet") return process.env.ALCHEMY_NFT_NETWORK_TESTNET || process.env.ALCHEMY_NFT_NETWORK || "";
+  return process.env.ALCHEMY_NFT_NETWORK_MAINNET || process.env.ALCHEMY_NFT_NETWORK || "";
+}
+
+export function getCollectionAllowlist(): string[] {
+  const raw = resolvePublicByMode(
+    process.env.NEXT_PUBLIC_COLLECTION_ALLOWLIST_LOCAL,
+    process.env.NEXT_PUBLIC_COLLECTION_ALLOWLIST_TESTNET,
+    process.env.NEXT_PUBLIC_COLLECTION_ALLOWLIST_MAINNET,
+    process.env.NEXT_PUBLIC_COLLECTION_ALLOWLIST
+  );
+  return raw
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 export function getContracts(client: JsonRpcProvider) {
@@ -73,16 +140,4 @@ export function shortAddress(address: string): string {
 
 export function nftTypeLabel(typeValue: number): "NORMAL" | "RARE" {
   return typeValue === 1 ? "RARE" : "NORMAL";
-}
-
-export function parseQrPayload(payload: string): { wallet?: string; rightsId?: string } {
-  const cleaned = payload.trim();
-
-  const walletMatch = cleaned.match(/0x[a-fA-F0-9]{40}/);
-  const rightsMatch = cleaned.match(/(?:right|rights|id|token)\s*[:=]\s*(\d+)/i) || cleaned.match(/\b(\d{1,6})\b/);
-
-  return {
-    wallet: walletMatch?.[0],
-    rightsId: rightsMatch?.[1],
-  };
 }

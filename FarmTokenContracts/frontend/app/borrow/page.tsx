@@ -57,7 +57,7 @@ export default function BorrowPage() {
         <input className="mb-3 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2" value={rightsId} onChange={(e) => setRightsId(e.target.value)} />
 
         <div className="mb-3">
-          <QrScannerPanel onRightsDetected={setRightsId} />
+          <QrScannerPanel />
         </div>
 
         <button onClick={refresh} className="rounded-md border border-slate-700 px-4 py-2 text-sm">Refresh</button>

@@ -98,29 +98,30 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="mx-auto max-w-7xl px-6 py-8 text-slate-100">
-      <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6">
+    <main className="text-slate-100">
+      <section className="mirror-panel">
         <h1 className="text-3xl font-semibold">Ballet Wallet NFT Mirror</h1>
-        <p className="mt-2 text-sm text-slate-400">
+        <p className="mt-2 text-sm mirror-muted">
           Read-only mirror with manual/QR wallet input, real NFT ownership data, dual-oracle valuation, and per-NFT LTV.
         </p>
 
-        <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+        {/* Wallet integration: manual entry plus QR scan, no injected wallet provider. */}
+        <div className="mirror-form-grid">
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Ballet Wallet Address</label>
+            <label className="mb-1 block text-xs mirror-muted">Ballet Wallet Address</label>
             <input
               value={walletAddress}
               onChange={(e) => setWalletAddress(e.target.value)}
-              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              className="mirror-input"
               placeholder="0x..."
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">LTV Ratio (%)</label>
+            <label className="mb-1 block text-xs mirror-muted">LTV Ratio (%)</label>
             <input
               value={ltvPercentInput}
               onChange={(e) => setLtvPercentInput(e.target.value)}
-              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              className="mirror-input"
               placeholder="50"
             />
           </div>
@@ -131,66 +132,67 @@ export default function DashboardPage() {
           <button
             onClick={loadMirror}
             disabled={loadingMirror}
-            className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-200 disabled:opacity-60"
+            className="mirror-btn"
           >
             {loadingMirror ? "Loading..." : "Load Real NFT Mirror"}
           </button>
-          <span className="text-sm text-slate-300">{status}</span>
+          <span className="text-sm mirror-muted">{status}</span>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-5">
-          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3">
-            <div className="text-xs text-slate-400">Wallet</div>
-            <div>{walletAddress ? shortAddress(walletAddress) : "Not set"}</div>
+        <div className="mirror-summary-grid">
+          <div className="mirror-card">
+            <div className="mirror-card-label">Wallet</div>
+            <div className="mirror-card-value">{walletAddress ? shortAddress(walletAddress) : "Not set"}</div>
           </div>
-          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3">
-            <div className="text-xs text-slate-400">NFT Count</div>
-            <div>{rows.length}</div>
+          <div className="mirror-card">
+            <div className="mirror-card-label">NFT Count</div>
+            <div className="mirror-card-value">{rows.length}</div>
           </div>
-          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3">
-            <div className="text-xs text-slate-400">Total NFT Value</div>
-            <div>{totalValueEth.toFixed(6)} ETH</div>
+          <div className="mirror-card">
+            <div className="mirror-card-label">Total NFT Value</div>
+            <div className="mirror-card-value">{totalValueEth.toFixed(6)} ETH</div>
           </div>
-          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3">
-            <div className="text-xs text-slate-400">Total LTV</div>
-            <div>{totalLtvEth.toFixed(6)} ETH</div>
+          <div className="mirror-card">
+            <div className="mirror-card-label">Total LTV</div>
+            <div className="mirror-card-value">{totalLtvEth.toFixed(6)} ETH</div>
           </div>
-          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3">
-            <div className="text-xs text-slate-400">Normal / Rare</div>
-            <div>{normalCount} / {rareCount}</div>
+          <div className="mirror-card">
+            <div className="mirror-card-label">Normal / Rare</div>
+            <div className="mirror-card-value">{normalCount} / {rareCount}</div>
           </div>
         </div>
       </section>
 
-      <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-6">
+      <section className="mirror-panel">
         <h2 className="mb-3 text-xl">NFT Mirror Output</h2>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1000px] text-sm">
-            <thead className="text-slate-400">
+        {/* Oracle logic and LTV are rendered exactly as returned from the mirror API. */}
+        <div className="mirror-table-wrap">
+          <table className="mirror-table text-sm">
+            <thead>
               <tr>
-                <th className="pb-2 text-left">NFT ID</th>
-                <th className="pb-2 text-left">Contract Address</th>
-                <th className="pb-2 text-left">NFT Type</th>
-                <th className="pb-2 text-left">Oracle Used</th>
-                <th className="pb-2 text-left">Oracle Source</th>
-                <th className="pb-2 text-right">Oracle Price</th>
-                <th className="pb-2 text-right">LTV Value</th>
-                <th className="pb-2 text-right">Trait Prevalence</th>
+                <th>NFT ID</th>
+                <th>Contract Address</th>
+                <th>NFT Type</th>
+                <th>Oracle Used</th>
+                <th>Oracle Source</th>
+                <th className="num">Oracle Price</th>
+                <th className="num">LTV Value</th>
+                <th className="num">Trait Prevalence</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={`${row.contractAddress}:${row.tokenId}`} className="border-t border-slate-800">
-                  <td className="py-2 font-mono tabular-nums">{row.tokenId}</td>
-                  <td className="py-2 font-mono text-xs">{row.contractAddress}</td>
-                  <td className="py-2">
-                    <span className={row.nftType === "RARE" ? "text-amber-300" : "text-cyan-300"}>{row.nftType}</span>
+                <tr key={`${row.contractAddress}:${row.tokenId}`}>
+                  <td className="mono">{row.tokenId}</td>
+                  <td className="mono text-xs">{row.contractAddress}</td>
+                  <td>
+                    <span className={row.nftType === "RARE" ? "accent-rare" : "accent-normal"}>{row.nftType}</span>
                   </td>
-                  <td className="py-2">{row.oracleName}</td>
-                  <td className="py-2">{row.oracleSource}</td>
-                  <td className="py-2 text-right font-mono tabular-nums">{row.oraclePriceEth !== null ? `${row.oraclePriceEth.toFixed(6)} ETH` : "n/a"}</td>
-                  <td className="py-2 text-right font-mono tabular-nums">{row.ltvEth !== null ? `${row.ltvEth.toFixed(6)} ETH` : "n/a"}</td>
-                  <td className="py-2 text-right font-mono tabular-nums">
+                  <td>{row.oracleName}</td>
+                  <td>{row.oracleSource}</td>
+                  <td className="num">{row.oraclePriceEth !== null ? `${row.oraclePriceEth.toFixed(6)} ETH` : "n/a"}</td>
+                  <td className="num">{row.ltvEth !== null ? `${row.ltvEth.toFixed(6)} ETH` : "n/a"}</td>
+                  <td className="num">
                     {row.minTraitPrevalence !== null && row.maxTraitPrevalence !== null
                       ? `${(row.minTraitPrevalence * 100).toFixed(2)}% - ${(row.maxTraitPrevalence * 100).toFixed(2)}%`
                       : "n/a"}
