@@ -106,9 +106,20 @@ export function getReadProvider(): JsonRpcProvider {
 
 export function getProviderNetwork(): string {
   const mode = getNetworkMode();
-  if (mode === "local") return process.env.ALCHEMY_NFT_NETWORK_LOCAL || process.env.ALCHEMY_NFT_NETWORK || "";
-  if (mode === "testnet") return process.env.ALCHEMY_NFT_NETWORK_TESTNET || process.env.ALCHEMY_NFT_NETWORK || "";
-  return process.env.ALCHEMY_NFT_NETWORK_MAINNET || process.env.ALCHEMY_NFT_NETWORK || "";
+  const generic = process.env.ALCHEMY_NFT_NETWORK;
+  const local = process.env.ALCHEMY_NFT_NETWORK_LOCAL;
+  const testnet = process.env.ALCHEMY_NFT_NETWORK_TESTNET;
+  const mainnet = process.env.ALCHEMY_NFT_NETWORK_MAINNET;
+
+  if (mode === "local") {
+    return local || generic || mainnet || testnet || "";
+  }
+
+  if (mode === "testnet") {
+    return testnet || generic || local || mainnet || "";
+  }
+
+  return mainnet || generic || local || testnet || "";
 }
 
 export function getCollectionAllowlist(): string[] {
