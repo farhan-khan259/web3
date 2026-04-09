@@ -1,0 +1,195 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  RISK_MANAGER
+  TREASURY_MANAGER
+}
+
+enum LoanStatus {
+  ACTIVE
+  REPAID
+  LIQUIDATED
+  PANIC
+}
+
+enum PanicExitReason {
+  AUTO_RECOVERY
+  MANUAL
+  LIQUIDATION
+}
+
+enum RevenueSource {
+  LICENSE
+  MARKETPLACE
+  OTHER
+}
+
+enum DistributionType {
+  DEBT_REPAYMENT
+  RESERVE
+  SURPLUS
+}
+
+model User {
+  id                     String   @id @default(cuid())
+  walletAddress          String   @unique @db.VarChar(42)
+  email                  String?  @unique @db.VarChar(255)
+  roles                  UserRole @default(USER)
+  notificationPreferences Json
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  deposits               Deposit[]
+  borrowedLoans          Loan[]   @relation("BorrowerLoans")
+  lentLoans              Loan[]   @relation("LenderLoans")
+  proposals               MultisigProposal[] @relation("ProposerProposals")
+
+  @@index([walletAddress])
+  @@index([createdAt])
+  @@index([updatedAt])
+}
+
+model Deposit {
+  id                String   @id @default(cuid())
+  userId            String
+  collectionAddress String   @db.VarChar(42)
+  tokenId           BigInt
+  vaultId           String
+  depositTx         String   @db.Text
+  depositedAt       DateTime @default(now())
+  withdrawnAt       DateTime?
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([collectionAddress, tokenId])
+  @@index([tokenId])
+  @@index([vaultId])
+  @@index([depositedAt])
+  @@index([withdrawnAt])
+}
+
+model Loan {
+  id              String     @id @default(cuid())
+  borrowerId      String
+  lenderId        String?
+  vaultId         String
+  tokenId         BigInt
+  amountBorrowed  Decimal    @db.Decimal(30, 18)
+  debtTokenAmount Decimal    @db.Decimal(30, 18)
+  interestRate    Decimal    @db.Decimal(20, 8)
+  ltvAtIssuance   Decimal    @db.Decimal(20, 8)
+  healthFactor    Decimal    @db.Decimal(20, 8)
+  status          LoanStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now())
+  repaidAt        DateTime?
+
+  borrower        User       @relation("BorrowerLoans", fields: [borrowerId], references: [id], onDelete: Cascade)
+  lender          User?      @relation("LenderLoans", fields: [lenderId], references: [id], onDelete: SetNull)
+  panicEvents     PanicEvent[]
+  revenueFlows    RevenueFlow[]
+
+  @@index([borrowerId])
+  @@index([lenderId])
+  @@index([vaultId])
+  @@index([tokenId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([repaidAt])
+}
+
+model PanicEvent {
+  id             String           @id @default(cuid())
+  tokenId        BigInt
+  loanId         String
+  triggerLtv     Decimal          @db.Decimal(20, 8)
+  panicThreshold Decimal          @db.Decimal(20, 8)
+  enteredAt      DateTime         @default(now())
+  exitedAt       DateTime?
+  exitReason     PanicExitReason?
+
+  loan           Loan             @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId])
+  @@index([loanId])
+  @@index([enteredAt])
+  @@index([exitedAt])
+}
+
+model RevenueFlow {
+  id              String            @id @default(cuid())
+  tokenId         BigInt
+  loanId          String?
+  amount          Decimal           @db.Decimal(30, 18)
+  source          RevenueSource
+  distributionType DistributionType
+  distributedAt   DateTime          @default(now())
+
+  loan            Loan?             @relation(fields: [loanId], references: [id], onDelete: SetNull)
+
+  @@index([tokenId])
+  @@index([loanId])
+  @@index([source])
+  @@index([distributionType])
+  @@index([distributedAt])
+}
+
+model License {
+  id               String   @id @default(cuid())
+  licenseTokenId   BigInt   @unique
+  holderAddress    String   @db.VarChar(42)
+  nftCollection    String   @db.VarChar(42)
+  nftTokenId       BigInt
+  licenseType      String   @db.VarChar(64)
+  territory        String   @db.VarChar(64)
+  startTimestamp   DateTime
+  endTimestamp     DateTime
+  trademarkRef     String   @db.VarChar(255)
+  isActive         Boolean  @default(true)
+
+  @@index([holderAddress])
+  @@index([nftCollection, nftTokenId])
+  @@index([licenseTokenId])
+  @@index([isActive])
+  @@index([startTimestamp])
+  @@index([endTimestamp])
+}
+
+model OracleSnapshot {
+  id                String   @id @default(cuid())
+  collectionAddress String   @db.VarChar(42)
+  floorPrice        Decimal  @db.Decimal(30, 18)
+  rarityScore       Decimal  @db.Decimal(20, 8)
+  utilityScore      Decimal  @db.Decimal(20, 8)
+  valuationPrimary  Decimal  @db.Decimal(30, 18)
+  valuationSecondary Decimal @db.Decimal(30, 18)
+  timestamp         DateTime @default(now())
+
+  @@index([collectionAddress])
+  @@index([timestamp])
+}
+
+model MultisigProposal {
+  id             String   @id @default(cuid())
+  proposerId     String
+  proposer       User     @relation("ProposerProposals", fields: [proposerId], references: [id], onDelete: Cascade)
+  destination    String   @db.VarChar(42)
+  calldata       String   @db.Text
+  description    String   @db.Text
+  confirmations  Int      @default(0)
+  executed       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@index([proposerId])
+  @@index([destination])
+  @@index([executed])
+  @@index([createdAt])
+}

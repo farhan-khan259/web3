@@ -1,0 +1,90 @@
+{
+  "name": "web3-root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Root dependency manifest for NFT lending protocol (frontend, backend, monitoring tooling)",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "npm run dev:frontend",
+    "dev:frontend": "cd FarmTokenContracts/frontend && npm run dev",
+    "dev:backend": "node backend/src/server.js",
+    "build": "npm run build:frontend",
+    "build:frontend": "cd FarmTokenContracts/frontend && npm run build",
+    "lint": "eslint . --ext .js,.cjs,.mjs,.ts,.tsx",
+    "format": "prettier --write .",
+    "test": "jest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "install:python-monitoring": "python3 -m pip install web3 requests python-dotenv psycopg2-binary aiohttp websockets"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.1.2",
+    "@prisma/client": "^6.6.0",
+    "@rainbow-me/rainbowkit": "^2.1.7",
+    "@tanstack/react-query": "^5.66.8",
+    "axios": "^1.8.4",
+    "bcryptjs": "^2.4.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.483.0",
+    "morgan": "^1.10.0",
+    "next": "14.2.24",
+    "node-cron": "^4.0.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-hook-form": "^7.54.2",
+    "recharts": "^2.15.1",
+    "socket.io": "^4.8.1",
+    "sonner": "^2.0.1",
+    "tailwindcss": "^3.4.17",
+    "tailwind-merge": "^2.6.0",
+    "viem": "^2.23.14",
+    "wagmi": "^2.14.11",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.14",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^22.13.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "eslint": "^9.22.0",
+    "eslint-config-next": "14.2.24",
+    "jest": "^29.7.0",
+    "prettier": "^3.5.3",
+    "prisma": "^6.6.0",
+    "shadcn": "^2.3.0",
+    "ts-jest": "^29.2.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.2"
+  },
+  "overrides": {
+    "wagmi": "^2.14.11",
+    "viem": "^2.23.14"
+  },
+  "pythonMonitoring": {
+    "required": [
+      "web3",
+      "requests",
+      "python-dotenv",
+      "psycopg2-binary",
+      "aiohttp",
+      "websockets"
+    ],
+    "notes": [
+      "asyncio is part of Python standard library and is not installed via pip"
+    ]
+  }
+}

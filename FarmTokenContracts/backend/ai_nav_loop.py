@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from web3 import Web3
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # noqa: BLE001
+    psycopg = None
+    dict_row = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -46,6 +53,12 @@ TOKEN_WEIGHTING = float(os.getenv("TOKEN_WEIGHTING", "1"))
 UPDATE_INTERVAL_SECONDS = int(os.getenv("ORACLE_UPDATE_INTERVAL_SECONDS", "60"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "4"))
+PANIC_EVENTS_DATABASE_URL = os.getenv("PANIC_EVENTS_DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
+PANIC_EVENTS_TABLE = os.getenv("PANIC_EVENTS_TABLE", "panic_events").strip()
+PANIC_MONITOR_LIMIT = int(os.getenv("PANIC_MONITOR_LIMIT", "200"))
+DEFAULT_PANIC_THRESHOLD_BPS = int(os.getenv("PANIC_THRESHOLD_BPS", "8500"))
+DEFAULT_RECOVERY_LTV_BPS = int(os.getenv("RECOVERY_LTV_BPS", "6000"))
+DEFAULT_AUTO_PANIC_ENABLED = os.getenv("AUTO_PANIC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 logger.info(f"ALCHEMY_API_KEY present: {bool(ALCHEMY_API_KEY)}")
 logger.info(f"ALCHEMY_NFT_NETWORK: {ALCHEMY_NFT_NETWORK}")
@@ -116,6 +129,11 @@ state: Dict[str, Any] = {
     "alerts": [],
     "last_success_at": None,
     "last_error": None,
+    "panic_config": {
+        "panicThresholdBps": DEFAULT_PANIC_THRESHOLD_BPS,
+        "autoPanicEnabled": DEFAULT_AUTO_PANIC_ENABLED,
+        "recoveryLtvBps": DEFAULT_RECOVERY_LTV_BPS,
+    },
 }
 
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -178,6 +196,246 @@ def _retry(operation_name: str, fn):
             time.sleep(delay)
             delay *= 2
     raise RuntimeError(f"{operation_name} failed after {MAX_RETRIES} retries: {last_error}")
+
+
+def _sanitize_identifier(identifier: str) -> str:
+    if not identifier or not all(character.isalnum() or character == "_" for character in identifier):
+        raise ValueError("Invalid SQL identifier")
+    return identifier
+
+
+def _parse_timestamp(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _normalize_panic_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    entered_at = _parse_timestamp(row.get("entered_at") or row.get("created_at"))
+    exited_at = _parse_timestamp(row.get("exited_at"))
+    return {
+        "tokenId": int(row.get("token_id") or 0),
+        "collectionAddress": str(row.get("collection_address") or ""),
+        "owner": str(row.get("owner_address") or row.get("owner") or ""),
+        "currentLtvBps": int(row.get("current_ltv_bps") or 0),
+        "panicThresholdBps": int(row.get("panic_threshold_bps") or state["panic_config"]["panicThresholdBps"]),
+        "enteredAt": entered_at,
+        "exitedAt": exited_at,
+        "timeInPanicSeconds": int(row.get("time_in_panic_seconds") or 0),
+        "debtAmountWei": str(row.get("debt_amount_wei") or row.get("debt_wei") or 0),
+        "action": str(row.get("action") or "panic_enter"),
+        "actor": str(row.get("actor_address") or row.get("actor") or ""),
+        "reason": str(row.get("reason") or ""),
+        "isActive": bool(row.get("is_active", False)),
+    }
+
+
+def _default_panic_monitor_payload() -> Dict[str, Any]:
+    panic_rows = [
+        {
+            "tokenId": token_id,
+            "collectionAddress": COLLECTION_ADDRESS or "0x0000000000000000000000000000000000000000",
+            "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+            "currentLtvBps": 7_250 + token_id * 80,
+            "panicThresholdBps": state["panic_config"]["panicThresholdBps"],
+            "enteredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - (token_id + 1) * 1_800)),
+            "exitedAt": None,
+            "timeInPanicSeconds": (token_id + 1) * 1_800,
+            "debtAmountWei": str((token_id + 1) * 2_000_000_000_000_000_000),
+            "action": "auto_panic_trigger" if token_id % 2 else "panic_enter",
+            "actor": "python-monitor",
+            "reason": "demo fallback",
+            "isActive": True,
+        }
+        for token_id in TOKEN_IDS[:4]
+    ]
+
+    timeline = [
+        {"label": "Mon", "entries": 2, "exits": 1},
+        {"label": "Tue", "entries": 3, "exits": 2},
+        {"label": "Wed", "entries": 1, "exits": 0},
+        {"label": "Thu", "entries": 4, "exits": 2},
+        {"label": "Fri", "entries": 2, "exits": 1},
+        {"label": "Sat", "entries": 1, "exits": 1},
+        {"label": "Sun", "entries": 3, "exits": 2},
+    ]
+
+    manual_logs = [
+        {
+            "id": f"demo-{index}",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - index * 3_600)),
+            "tokenId": token_id,
+            "action": action,
+            "actor": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+            "reason": reason,
+        }
+        for index, (token_id, action, reason) in enumerate(
+            [
+                (1, "force_exit_panic", "Recovered after collateral top-up"),
+                (2, "set_panic_threshold", "Temporary risk calibration"),
+                (3, "enter_panic_mode", "Manual containment"),
+            ],
+            start=1,
+        )
+    ]
+
+    return {
+        "status": "demo",
+        "source": "memory",
+        "config": state["panic_config"],
+        "summary": {
+            "totalNftsInPanic": len(panic_rows),
+            "approachingPanic": max(0, len(TOKEN_IDS) - len(panic_rows)),
+            "autoPanicTriggersToday": 3,
+        },
+        "panicNfts": panic_rows,
+        "timeline": timeline,
+        "manualLogs": manual_logs,
+        "collections": [COLLECTION_ADDRESS] if COLLECTION_ADDRESS else [],
+    }
+
+
+def _load_panic_events_from_postgres(limit: int = PANIC_MONITOR_LIMIT) -> Dict[str, Any]:
+    if not PANIC_EVENTS_DATABASE_URL:
+        raise RuntimeError("PANIC_EVENTS_DATABASE_URL not set")
+    if psycopg is None or dict_row is None:
+        raise RuntimeError("psycopg is not installed")
+
+    table_name = _sanitize_identifier(PANIC_EVENTS_TABLE)
+    sql = f"""
+        WITH ranked AS (
+            SELECT
+                token_id,
+                collection_address,
+                owner_address,
+                current_ltv_bps,
+                panic_threshold_bps,
+                entered_at,
+                exited_at,
+                debt_amount_wei,
+                action,
+                actor_address,
+                reason,
+                created_at,
+                COALESCE(time_in_panic_seconds, EXTRACT(EPOCH FROM (COALESCE(exited_at, NOW()) - COALESCE(entered_at, created_at))))::bigint AS time_in_panic_seconds,
+                CASE
+                    WHEN COALESCE(exited_at, created_at) IS NULL THEN true
+                    WHEN exited_at IS NULL AND action NOT IN ('panic_exit', 'force_exit_panic', 'auto_exit_panic') THEN true
+                    ELSE false
+                END AS is_active,
+                ROW_NUMBER() OVER (PARTITION BY token_id ORDER BY COALESCE(created_at, entered_at) DESC) AS rn
+            FROM {table_name}
+        )
+        SELECT *
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY COALESCE(created_at, entered_at) DESC
+        LIMIT %s
+    """
+
+    timeline_sql = f"""
+        SELECT
+            TO_CHAR(DATE_TRUNC('day', COALESCE(created_at, entered_at)), 'YYYY-MM-DD') AS label,
+            COUNT(*) FILTER (WHERE action IN ('panic_enter', 'auto_panic_trigger', 'health_factor_trigger')) AS entries,
+            COUNT(*) FILTER (WHERE action IN ('panic_exit', 'auto_exit_panic', 'force_exit_panic')) AS exits
+        FROM {table_name}
+        WHERE COALESCE(created_at, entered_at) >= NOW() - INTERVAL '30 days'
+        GROUP BY 1
+        ORDER BY 1
+    """
+
+    manual_sql = f"""
+        SELECT
+            created_at,
+            token_id,
+            action,
+            actor_address,
+            reason
+        FROM {table_name}
+        ORDER BY COALESCE(created_at, entered_at) DESC
+        LIMIT %s
+    """
+
+    with psycopg.connect(PANIC_EVENTS_DATABASE_URL, row_factory=dict_row) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, (limit,))
+            panic_rows = [dict(row) for row in cursor.fetchall()]
+
+            cursor.execute(timeline_sql)
+            timeline_rows = [dict(row) for row in cursor.fetchall()]
+
+            cursor.execute(manual_sql, (20,))
+            manual_rows = [dict(row) for row in cursor.fetchall()]
+
+            cursor.execute(
+                f"""
+                    SELECT
+                        COUNT(*) FILTER (WHERE is_active) AS total_in_panic,
+                        COUNT(*) FILTER (WHERE NOT is_active AND current_ltv_bps >= 7_000) AS approaching_panic,
+                        COUNT(*) FILTER (WHERE action = 'auto_panic_trigger' AND COALESCE(created_at, entered_at) >= NOW() - INTERVAL '1 day') AS auto_panic_today
+                    FROM (
+                        SELECT DISTINCT ON (token_id)
+                            token_id,
+                            current_ltv_bps,
+                            action,
+                            created_at,
+                            entered_at,
+                            exited_at,
+                            CASE
+                                WHEN exited_at IS NULL AND action NOT IN ('panic_exit', 'force_exit_panic', 'auto_exit_panic') THEN true
+                                ELSE false
+                            END AS is_active
+                        FROM {table_name}
+                        ORDER BY token_id, COALESCE(created_at, entered_at) DESC
+                    ) latest_rows
+                """
+            )
+            summary_row = cursor.fetchone() or {}
+
+    return {
+        "status": "ok",
+        "source": "postgresql",
+        "config": state["panic_config"],
+        "summary": {
+            "totalNftsInPanic": int(summary_row.get("total_in_panic") or 0),
+            "approachingPanic": int(summary_row.get("approaching_panic") or 0),
+            "autoPanicTriggersToday": int(summary_row.get("auto_panic_today") or 0),
+        },
+        "panicNfts": [
+            _normalize_panic_row({**row, "is_active": row.get("is_active")})
+            for row in panic_rows
+        ],
+        "timeline": [
+            {
+                "label": row.get("label") or "",
+                "entries": int(row.get("entries") or 0),
+                "exits": int(row.get("exits") or 0),
+            }
+            for row in timeline_rows
+        ],
+        "manualLogs": [
+            {
+                "id": f"{row.get('action', 'event')}-{index}",
+                "timestamp": _parse_timestamp(row.get("created_at")),
+                "tokenId": int(row.get("token_id") or 0),
+                "action": str(row.get("action") or ""),
+                "actor": str(row.get("actor_address") or ""),
+                "reason": str(row.get("reason") or ""),
+            }
+            for index, row in enumerate(manual_rows, start=1)
+        ],
+        "collections": [COLLECTION_ADDRESS] if COLLECTION_ADDRESS else [],
+    }
+
+
+def get_panic_monitor_payload() -> Dict[str, Any]:
+    try:
+        return _load_panic_events_from_postgres()
+    except Exception as error:  # noqa: BLE001
+        logger.warning(f"Using panic monitor fallback payload: {error}")
+        return _default_panic_monitor_payload()
 
 
 def fetch_collection_floor_eth() -> float:
@@ -424,6 +682,30 @@ def health():
         "status": "ok",
         "configured": is_configured,
         "tokenIds": TOKEN_IDS,
+    }
+
+
+@app.get("/panic-monitor")
+def panic_monitor():
+    logger.debug("GET /panic-monitor called")
+    return get_panic_monitor_payload()
+
+
+@app.post("/panic-monitor/config")
+def update_panic_monitor_config(payload: Dict[str, Any]):
+    logger.debug(f"POST /panic-monitor/config called with payload: {payload}")
+
+    config = state["panic_config"]
+    if "panicThresholdBps" in payload:
+        config["panicThresholdBps"] = int(payload["panicThresholdBps"])
+    if "autoPanicEnabled" in payload:
+        config["autoPanicEnabled"] = bool(payload["autoPanicEnabled"])
+    if "recoveryLtvBps" in payload:
+        config["recoveryLtvBps"] = int(payload["recoveryLtvBps"])
+
+    return {
+        "status": "ok",
+        "config": config,
     }
 
 

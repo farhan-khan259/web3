@@ -47,6 +47,12 @@ export const ADDRESSES = {
     process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS_MAINNET,
     process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS
   ),
+  licenseToken: resolvePublicByMode(
+    process.env.NEXT_PUBLIC_LICENSE_TOKEN_ADDRESS_LOCAL,
+    process.env.NEXT_PUBLIC_LICENSE_TOKEN_ADDRESS_TESTNET,
+    process.env.NEXT_PUBLIC_LICENSE_TOKEN_ADDRESS_MAINNET,
+    process.env.NEXT_PUBLIC_LICENSE_TOKEN_ADDRESS
+  ),
 };
 
 export const oracleAbi = [
@@ -94,6 +100,12 @@ export const loanAbi = [
 export const routerAbi = [
   "function depositRevenue(uint256 rightsId) external payable",
   "function setBeneficiary(uint256 rightsId, address beneficiary) external",
+] as const;
+
+export const licenseAbi = [
+  "function mintLicense(address to, uint256 nftCollection, uint256 nftTokenId, uint256 durationDays, uint8 licenseType, uint8 territory, string trademarkRef) external returns (uint256)",
+  "function isLicenseValid(uint256 licenseId) external view returns (bool)",
+  "function revokeLicense(uint256 licenseId, string reason) external",
 ] as const;
 
 export function hasAllAddresses(): boolean {
@@ -150,6 +162,7 @@ export function getContracts(client: JsonRpcProvider) {
     vault: new Contract(ADDRESSES.vault, vaultAbi, client),
     loan: new Contract(ADDRESSES.loan, loanAbi, client),
     router: new Contract(ADDRESSES.router, routerAbi, client),
+    licenseToken: new Contract(ADDRESSES.licenseToken, licenseAbi, client),
   };
 }
 

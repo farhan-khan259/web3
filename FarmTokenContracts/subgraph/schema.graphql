@@ -1,0 +1,64 @@
+type Deposit @entity(immutable: true) {
+  id: ID!
+  user: Bytes!
+  collection: Bytes!
+  tokenId: BigInt!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+enum LoanStatus {
+  ACTIVE
+  REPAID
+  LIQUIDATED
+  PANIC
+}
+
+type Loan @entity {
+  id: ID!
+  borrower: Bytes!
+  tokenId: BigInt!
+  amount: BigInt!
+  ltv: BigInt!
+  status: LoanStatus!
+  createdAt: BigInt!
+  repaidAt: BigInt
+}
+
+type Liquidation @entity(immutable: true) {
+  id: ID!
+  loan: Loan!
+  tokenId: BigInt!
+  liquidationPrice: BigInt!
+  timestamp: BigInt!
+}
+
+type PanicEvent @entity {
+  id: ID!
+  tokenId: BigInt!
+  enteredAt: BigInt!
+  exitedAt: BigInt
+  duration: BigInt
+}
+
+enum DistributionType {
+  REVENUE_RECEIVED
+  DEBT_REPAYMENT
+}
+
+type RevenueDistribution @entity(immutable: true) {
+  id: ID!
+  tokenId: BigInt!
+  amount: BigInt!
+  distributionType: DistributionType!
+  timestamp: BigInt!
+}
+
+type License @entity {
+  id: ID!
+  holder: Bytes!
+  nftCollection: BigInt!
+  nftTokenId: BigInt!
+  licenseType: Int!
+  expiresAt: BigInt!
+}

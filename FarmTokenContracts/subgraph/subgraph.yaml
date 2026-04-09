@@ -1,0 +1,102 @@
+specVersion: 1.0.0
+schema:
+  file: ./schema.graphql
+
+dataSources:
+  - kind: ethereum/contract
+    name: Vault
+    network: mainnet
+    source:
+      address: "0x0000000000000000000000000000000000000001" # TODO: replace with deployed Vault address
+      abi: Vault
+      startBlock: 0 # TODO: replace with deployment block + 1
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Deposit
+      abis:
+        - name: Vault
+          file: ./abis/Vault.json
+      eventHandlers:
+        - event: RightLocked(indexed uint256,indexed address,uint8)
+          handler: handleVaultDeposit
+      file: ./src/mapping.ts
+
+  - kind: ethereum/contract
+    name: LoanEngine
+    network: mainnet
+    source:
+      address: "0x0000000000000000000000000000000000000002" # TODO: replace with deployed LoanEngine address
+      abi: LoanEngine
+      startBlock: 0 # TODO: replace with deployment block + 1
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Loan
+        - Liquidation
+        - PanicEvent
+      abis:
+        - name: LoanEngine
+          file: ./abis/LoanEngine.json
+      eventHandlers:
+        - event: Borrowed(indexed uint256,indexed address,uint256,uint256)
+          handler: handleLoanCreated
+        - event: Repaid(indexed uint256,indexed address,uint256,uint256)
+          handler: handleLoanRepaid
+        - event: Liquidated(indexed uint256,uint256,uint256)
+          handler: handleLoanLiquidated
+        - event: PanicModeEntered(indexed uint256,uint256,uint256)
+          handler: handlePanicModeEntered
+        - event: PanicModeExited(indexed uint256,uint256,uint256)
+          handler: handlePanicModeExited
+      file: ./src/mapping.ts
+
+  - kind: ethereum/contract
+    name: RevenueDistributor
+    network: mainnet
+    source:
+      address: "0x0000000000000000000000000000000000000003" # TODO: replace with deployed RevenueDistributor address
+      abi: RevenueDistributor
+      startBlock: 0 # TODO: replace with deployment block + 1
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - RevenueDistribution
+      abis:
+        - name: RevenueDistributor
+          file: ./abis/RevenueDistributor.json
+      eventHandlers:
+        - event: RevenueReceived(indexed uint256,uint256,indexed address)
+          handler: handleRevenueReceived
+        - event: DebtServiced(indexed uint256,uint256)
+          handler: handleDebtServiced
+      file: ./src/mapping.ts
+
+  - kind: ethereum/contract
+    name: LicenseToken
+    network: mainnet
+    source:
+      address: "0x0000000000000000000000000000000000000004" # TODO: replace with deployed LicenseToken address
+      abi: LicenseToken
+      startBlock: 0 # TODO: replace with deployment block + 1
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - License
+      abis:
+        - name: LicenseToken
+          file: ./abis/LicenseToken.json
+      eventHandlers:
+        - event: LicenseMinted(indexed uint256,indexed address,indexed uint256,uint256,uint64,uint64,uint8,uint8)
+          handler: handleLicenseMinted
+        - event: LicenseRevoked(indexed uint256,indexed address,string)
+          handler: handleLicenseRevoked
+      file: ./src/mapping.ts
