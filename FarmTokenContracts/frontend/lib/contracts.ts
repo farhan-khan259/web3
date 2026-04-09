@@ -52,9 +52,17 @@ export const ADDRESSES = {
 export const oracleAbi = [
   "function rightTypeOf(uint256 rightsId) external view returns (uint8)",
   "function setOracleData(uint256 rightsId, uint256 value, uint256 volatility, bool trademarkValid, bool provenanceValid, uint8 nftType) external",
+  "function setScores(uint256 rightsId, uint256 rarity, uint256 utility, uint256 distribution) external",
   "function validateOraclePath(uint256 rightsId, uint8 expectedType) external view returns (bool)",
   "function getFloorValue(uint256 rightsId) external view returns (uint256)",
+  "function getValuations(uint256 rightsId) external view returns (uint256 liquidationValue, uint256 appraisalValue)",
+  "function getCompositeScore(uint256 rightsId) external view returns (uint256)",
+  "function getDynamicLTV(uint256 rightsId) external view returns (uint256)",
+  "function rarityScore(uint256 rightsId) external view returns (uint256)",
+  "function utilityScore(uint256 rightsId) external view returns (uint256)",
+  "function distributionWeight(uint256 rightsId) external view returns (uint256)",
   "function getRiskStatus(uint256 rightsId) external view returns (bool)",
+  "function getEthUsdPriceE18() external view returns (uint256)",
   "function volatilityIndex() external view returns (uint256)",
   "function getVolatilityIndex() external view returns (uint256)",
 ] as const;
@@ -73,9 +81,10 @@ export const vaultAbi = [
 ] as const;
 
 export const loanAbi = [
-  "function positions(uint256 rightsId) external view returns (uint256 debt, bool inPanic)",
+  "function positions(uint256 rightsId) external view returns (uint256 debt, bool inPanic, bool liquidated)",
   "function getCurrentLTV(uint256 rightsId) external view returns (uint256)",
   "function getDynamicMaxLTV() external view returns (uint256)",
+  "function getDynamicMaxLTV(uint256 rightsId) external view returns (uint256)",
   "function borrow(uint256 rightsId, uint8 expectedType, uint256 amount) external",
   "function outstandingDebt(uint256 rightsId) external view returns (uint256)",
   "function isPanicMode(uint256 rightsId) external view returns (bool)",
@@ -142,6 +151,10 @@ export function getContracts(client: JsonRpcProvider) {
     loan: new Contract(ADDRESSES.loan, loanAbi, client),
     router: new Contract(ADDRESSES.router, routerAbi, client),
   };
+}
+
+export function getBackendBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
 }
 
 export function shortAddress(address: string): string {

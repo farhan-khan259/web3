@@ -6,7 +6,9 @@
   "scripts": {
     "test": "hardhat test",
     "node": "hardhat node",
-    "deploy:local": "hardhat run scripts/deploy_local_mvp.js --network localhost"
+    "deploy:local": "hardhat run scripts/deploy_local_mvp.js --network localhost",
+    "deploy:oracle-upgrade": "hardhat run scripts/deploy_oracle_upgrade.js --network sepolia",
+    "seed:scores": "hardhat run scripts/seed_scores.js --network localhost"
   },
   "keywords": [],
   "author": "",

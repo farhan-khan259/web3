@@ -1,8 +1,16 @@
 "use client";
 
+import { formatEther } from "ethers";
 import { useMemo, useState } from "react";
 import QrScannerPanel from "../components/QrScannerPanel";
-import { ADDRESSES, shortAddress } from "../lib/contracts";
+import {
+  ADDRESSES,
+  getBackendBaseUrl,
+  getContracts,
+  getReadProvider,
+  hasAllAddresses,
+  shortAddress,
+} from "../lib/contracts";
 
 type MirrorRow = {
   tokenId: string;
@@ -17,14 +25,31 @@ type MirrorRow = {
   maxTraitPrevalence: number | null;
 };
 
+type CreditRow = {
+  rightsId: number;
+  floorPriceEth: number;
+  oracleValuationEth: number;
+  debtEth: number;
+  ltvPercent: number;
+  riskStatus: "normal" | "warning" | "panic";
+};
+
 const DEFAULT_WALLET = "0xc82A59594560A3010F336ebe2e9CC4794DCD46cf";
+
+function riskClass(status: CreditRow["riskStatus"]): string {
+  if (status === "panic") return "text-red-400";
+  if (status === "warning") return "text-amber-300";
+  return "text-emerald-300";
+}
 
 export default function DashboardPage() {
   const [walletAddress, setWalletAddress] = useState(DEFAULT_WALLET);
   const [ltvPercentInput, setLtvPercentInput] = useState("50");
   const [rows, setRows] = useState<MirrorRow[]>([]);
+  const [creditRows, setCreditRows] = useState<CreditRow[]>([]);
   const [status, setStatus] = useState("Idle");
   const [loadingMirror, setLoadingMirror] = useState(false);
+  const [loadingCredit, setLoadingCredit] = useState(false);
   const [totalValueEth, setTotalValueEth] = useState(0);
   const [totalLtvEth, setTotalLtvEth] = useState(0);
 
@@ -35,6 +60,13 @@ export default function DashboardPage() {
     if (!Number.isFinite(numeric)) return 0;
     return numeric / 100;
   }, [ltvPercentInput]);
+
+  const creditTotals = useMemo(() => {
+    const totalCollateral = creditRows.reduce((sum, row) => sum + row.oracleValuationEth, 0);
+    const totalDebt = creditRows.reduce((sum, row) => sum + row.debtEth, 0);
+    const avgLtv = totalCollateral > 0 ? (totalDebt / totalCollateral) * 100 : 0;
+    return { totalCollateral, totalDebt, avgLtv };
+  }, [creditRows]);
 
   async function loadMirror() {
     const wallet = walletAddress.trim();
@@ -49,8 +81,10 @@ export default function DashboardPage() {
 
     setLoadingMirror(true);
     setStatus("Fetching NFTs + oracle values...");
+    console.log("[Dashboard] loadMirror called with wallet:", wallet, "ltvRatio:", ltvRatio);
 
     try {
+      console.log("[Dashboard] Calling /api/mirror endpoint...");
       const response = await fetch("/api/mirror", {
         method: "POST",
         headers: {
@@ -62,7 +96,10 @@ export default function DashboardPage() {
         }),
       });
 
+      console.log("[Dashboard] /api/mirror response status:", response.status);
       const payload = await response.json();
+      console.log("[Dashboard] /api/mirror payload:", payload);
+
       if (!response.ok) {
         throw new Error(String(payload?.error || `HTTP ${response.status}`));
       }
@@ -71,41 +108,139 @@ export default function DashboardPage() {
       setRows(nextRows);
       setTotalValueEth(Number(payload?.totals?.totalValueEth || 0));
       setTotalLtvEth(Number(payload?.totals?.totalLtvEth || 0));
-      setStatus(`Loaded ${nextRows.length} NFTs from wallet`);
-
-      console.log("[MirrorUI] wallet", wallet);
-      console.table(
-        nextRows.map((row) => ({
-          tokenId: row.tokenId,
-          contractAddress: row.contractAddress,
-          nftType: row.nftType,
-          oracleName: row.oracleName,
-          oracleSource: row.oracleSource,
-          oraclePriceEth: row.oraclePriceEth,
-          ltvEth: row.ltvEth,
-        }))
-      );
-      console.log("[MirrorUI] totals", {
-        totalValueEth: Number(payload?.totals?.totalValueEth || 0),
-        totalLtvEth: Number(payload?.totals?.totalLtvEth || 0),
-        nftCount: nextRows.length,
-      });
+      const msg = `Loaded ${nextRows.length} NFTs from wallet`;
+      setStatus(msg);
+      console.log("[Dashboard]", msg);
     } catch (error) {
-      setStatus(`Mirror load failed: ${(error as Error).message}`);
+      const errorMsg = `Mirror load failed: ${(error as Error).message}`;
+      setStatus(errorMsg);
+      console.error("[Dashboard] Error:", error);
     } finally {
       setLoadingMirror(false);
+    }
+  }
+
+  async function loadCreditOverview() {
+    console.log("[Dashboard] loadCreditOverview called");
+    
+    if (!hasAllAddresses()) {
+      const msg = "Missing contract addresses";
+      setStatus(msg);
+      console.error("[Dashboard]", msg, "ADDRESSES:", ADDRESSES);
+      return;
+    }
+
+    setLoadingCredit(true);
+    setStatus("Loading collateral, valuation, debt, and risk status...");
+    console.log("[Dashboard] All addresses present, starting credit load");
+    console.log("[Dashboard] ADDRESSES:", ADDRESSES);
+
+    try {
+      const contracts = getContracts(getReadProvider());
+      const backend = getBackendBaseUrl();
+      console.log("[Dashboard] Backend URL:", backend);
+      console.log("[Dashboard] Calling vault.getLockedRightIds()...");
+      
+      const ids = await contracts.vault.getLockedRightIds();
+      console.log("[Dashboard] Got locked right IDs:", ids);
+
+      const nextRows = await Promise.all(
+        ids.map(async (id: bigint) => {
+          console.log(`[Dashboard] Loading credit data for token ${id.toString()}...`);
+          const [floor, valuations, debt, oracleRisk] = await Promise.all([
+            contracts.oracle.getFloorValue(id),
+            contracts.oracle.getValuations(id),
+            contracts.loan.outstandingDebt(id),
+            contracts.oracle.getRiskStatus(id),
+          ]);
+
+          const floorPriceEth = Number(formatEther(floor));
+          const oracleValuationEth = Number(formatEther(valuations.liquidationValue));
+          const debtEth = Number(formatEther(debt));
+          const ltvPercent = oracleValuationEth > 0 ? (debtEth / oracleValuationEth) * 100 : 100;
+
+          console.log(`[Dashboard] Token ${id.toString()}: floor=${floorPriceEth.toFixed(4)} ETH, liquidationValue=${oracleValuationEth.toFixed(4)} ETH, debt=${debtEth.toFixed(4)} ETH, oracleRisk=${oracleRisk}`);
+
+          let riskStatus: CreditRow["riskStatus"] = oracleRisk ? "panic" : "normal";
+          try {
+            console.log(`[Dashboard] Fetching backend risk/ltv for token ${id.toString()}...`);
+            const [riskRes, ltvRes] = await Promise.all([
+              fetch(`${backend}/risk/${id.toString()}`),
+              fetch(`${backend}/ltv/${id.toString()}`),
+            ]);
+
+            if (riskRes.ok) {
+              const riskPayload = await riskRes.json();
+              console.log(`[Dashboard] Backend risk response for ${id.toString()}:`, riskPayload);
+              const statusRaw = String(riskPayload?.status || "normal").toLowerCase();
+              if (statusRaw === "panic" || statusRaw === "warning" || statusRaw === "normal") {
+                riskStatus = statusRaw;
+              }
+            } else {
+              console.warn(`[Dashboard] Backend risk response NOT OK: ${riskRes.status}`);
+            }
+
+            if (ltvRes.ok) {
+              const ltvPayload = await ltvRes.json();
+              console.log(`[Dashboard] Backend ltv response for ${id.toString()}:`, ltvPayload);
+              const ltvBps = Number(ltvPayload?.ltvBps || 0);
+              if (ltvBps > 0 && oracleValuationEth > 0) {
+                return {
+                  rightsId: Number(id),
+                  floorPriceEth,
+                  oracleValuationEth,
+                  debtEth,
+                  ltvPercent: ltvBps / 100,
+                  riskStatus,
+                };
+              }
+            } else {
+              console.warn(`[Dashboard] Backend ltv response NOT OK: ${ltvRes.status}`);
+            }
+          } catch (backendError) {
+            console.warn(`[Dashboard] Backend fetch error for token ${id.toString()}:`, backendError);
+            // Backend is optional; on-chain values are still rendered.
+          }
+
+          if (!oracleRisk && ltvPercent > 85) {
+            riskStatus = "warning";
+          }
+          if (ltvPercent >= 100 || oracleRisk) {
+            riskStatus = "panic";
+          }
+
+          return {
+            rightsId: Number(id),
+            floorPriceEth,
+            oracleValuationEth,
+            debtEth,
+            ltvPercent,
+            riskStatus,
+          };
+        })
+      );
+
+      setCreditRows(nextRows.sort((a, b) => a.rightsId - b.rightsId));
+      const msg = `Loaded ${nextRows.length} credit positions`;
+      setStatus(msg);
+      console.log("[Dashboard]", msg);
+    } catch (error) {
+      const errorMsg = `Credit load failed: ${(error as Error).message}`;
+      setStatus(errorMsg);
+      console.error("[Dashboard] Error:", error);
+    } finally {
+      setLoadingCredit(false);
     }
   }
 
   return (
     <main className="text-slate-100">
       <section className="mirror-panel">
-        <h1 className="text-3xl font-semibold">Ballet Wallet NFT Mirror</h1>
+        <h1 className="text-3xl font-semibold">Dashboard</h1>
         <p className="mt-2 text-sm mirror-muted">
-          Read-only mirror with manual/QR wallet input, real NFT ownership data, dual-oracle valuation, and per-NFT LTV.
+          Per-NFT valuation, debt, dynamic LTV, and risk monitoring across the oracle-credit pipeline.
         </p>
 
-        {/* Wallet integration: manual entry plus QR scan, no injected wallet provider. */}
         <div className="mirror-form-grid">
           <div>
             <label className="mb-1 block text-xs mirror-muted">Ballet Wallet Address</label>
@@ -129,12 +264,11 @@ export default function DashboardPage() {
 
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <QrScannerPanel onWalletDetected={setWalletAddress} />
-          <button
-            onClick={loadMirror}
-            disabled={loadingMirror}
-            className="mirror-btn"
-          >
-            {loadingMirror ? "Loading..." : "Load Real NFT Mirror"}
+          <button onClick={loadMirror} disabled={loadingMirror} className="mirror-btn">
+            {loadingMirror ? "Loading..." : "Load NFT Mirror"}
+          </button>
+          <button onClick={loadCreditOverview} disabled={loadingCredit} className="mirror-btn">
+            {loadingCredit ? "Loading..." : "Load Credit Overview"}
           </button>
           <span className="text-sm mirror-muted">{status}</span>
         </div>
@@ -149,11 +283,11 @@ export default function DashboardPage() {
             <div className="mirror-card-value">{rows.length}</div>
           </div>
           <div className="mirror-card">
-            <div className="mirror-card-label">Total NFT Value</div>
+            <div className="mirror-card-label">Mirror Total Value</div>
             <div className="mirror-card-value">{totalValueEth.toFixed(6)} ETH</div>
           </div>
           <div className="mirror-card">
-            <div className="mirror-card-label">Total LTV</div>
+            <div className="mirror-card-label">Mirror Total LTV</div>
             <div className="mirror-card-value">{totalLtvEth.toFixed(6)} ETH</div>
           </div>
           <div className="mirror-card">
@@ -164,8 +298,52 @@ export default function DashboardPage() {
       </section>
 
       <section className="mirror-panel">
+        <h2 className="mb-3 text-xl">Credit Engine Positions</h2>
+        <div className="mirror-summary-grid" style={{ gridTemplateColumns: "repeat(3,minmax(0,1fr))" }}>
+          <div className="mirror-card">
+            <div className="mirror-card-label">Total Collateral</div>
+            <div className="mirror-card-value">{creditTotals.totalCollateral.toFixed(4)} ETH</div>
+          </div>
+          <div className="mirror-card">
+            <div className="mirror-card-label">Total Debt</div>
+            <div className="mirror-card-value">{creditTotals.totalDebt.toFixed(4)} ETH</div>
+          </div>
+          <div className="mirror-card">
+            <div className="mirror-card-label">Avg LTV</div>
+            <div className="mirror-card-value">{creditTotals.avgLtv.toFixed(2)}%</div>
+          </div>
+        </div>
+
+        <div className="mirror-table-wrap mt-4">
+          <table className="mirror-table text-sm">
+            <thead>
+              <tr>
+                <th>Rights ID</th>
+                <th className="num">Floor Price</th>
+                <th className="num">Oracle Valuation</th>
+                <th className="num">Debt</th>
+                <th className="num">LTV %</th>
+                <th>Risk Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {creditRows.map((row) => (
+                <tr key={row.rightsId}>
+                  <td className="mono">{row.rightsId}</td>
+                  <td className="num">{row.floorPriceEth.toFixed(4)} ETH</td>
+                  <td className="num">{row.oracleValuationEth.toFixed(4)} ETH</td>
+                  <td className="num">{row.debtEth.toFixed(4)} ETH</td>
+                  <td className="num">{row.ltvPercent.toFixed(2)}%</td>
+                  <td className={riskClass(row.riskStatus)}>{row.riskStatus.toUpperCase()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="mirror-panel">
         <h2 className="mb-3 text-xl">NFT Mirror Output</h2>
-        {/* Oracle logic and LTV are rendered exactly as returned from the mirror API. */}
         <div className="mirror-table-wrap">
           <table className="mirror-table text-sm">
             <thead>
@@ -205,7 +383,7 @@ export default function DashboardPage() {
       </section>
 
       <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/80 p-6">
-        <h3 className="mb-2 text-lg">Testnet Contract Wiring (Read-Only)</h3>
+        <h3 className="mb-2 text-lg">Contract Wiring</h3>
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
           {Object.entries(ADDRESSES).map(([key, value]) => (
             <div key={key} className="rounded-md border border-slate-800 bg-slate-950/60 p-3 text-xs">
@@ -215,6 +393,7 @@ export default function DashboardPage() {
           ))}
         </div>
       </section>
+
     </main>
   );
 }

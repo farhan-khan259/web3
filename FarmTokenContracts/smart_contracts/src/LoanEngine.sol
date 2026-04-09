@@ -9,6 +9,7 @@ interface IOracleRegistry {
     function getRiskStatus(uint256 rightsId) external view returns (bool);
     function getVolatilityIndex() external view returns (uint256);
     function validateOraclePath(uint256 rightsId, uint8 expectedType) external view returns (bool);
+    function getDynamicLTV(uint256 rightsId) external view returns (uint256);
 }
 
 interface IVault {
@@ -16,6 +17,11 @@ interface IVault {
     function lockedBy(uint256 rightsId) external view returns (address);
     function rightTypeOf(uint256 rightsId) external view returns (uint8);
     function getSnapshotValue(uint256 rightsId) external view returns (uint256);
+}
+
+interface IDebtToken {
+    function mint(address to, uint256 amount) external;
+    function burnFromLoan(address from, uint256 amount) external;
 }
 
 /**
@@ -29,21 +35,25 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
     struct Position {
         uint256 debt;
         bool inPanic;
+        bool liquidated;
     }
 
     uint256 public constant BASIS_POINTS = 10_000;
-    uint256 public constant AUTO_PANIC_LTV = 8_000;
+    uint256 public constant AUTO_PANIC_LTV = 8_500;
 
     mapping(uint256 => Position) public positions;
     mapping(uint256 => bool) public rightInPanic;
 
     IOracleRegistry public oracle;
     IVault public vault;
+    IDebtToken public debtToken;
     address public revenueRouter;
 
-    event Borrow(uint256 indexed rightsId, uint256 amount);
-    event Repay(uint256 indexed rightsId, uint256 amount);
+    event Borrowed(uint256 indexed rightsId, address indexed borrower, uint256 amount, uint256 debtAfter);
+    event Repaid(uint256 indexed rightsId, address indexed payer, uint256 amount, uint256 debtAfter);
+    event Liquidated(uint256 indexed rightsId, uint256 debtCleared, uint256 ltvBps);
     event PanicTriggered(uint256 indexed rightsId);
+    event PanicResolved(uint256 indexed rightsId);
     event RevenueRouterUpdated(address indexed oldRouter, address indexed newRouter);
 
     modifier onlyRevenueRouter() {
@@ -54,10 +64,12 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
     constructor(
         address oracleAddress,
         address vaultAddress,
+        address debtTokenAddress,
         address admin
     ) {
         require(oracleAddress != address(0), "Invalid oracle");
         require(vaultAddress != address(0), "Invalid vault");
+        require(debtTokenAddress != address(0), "Invalid debt token");
         require(admin != address(0), "Invalid admin");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -66,6 +78,7 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
 
         oracle = IOracleRegistry(oracleAddress);
         vault = IVault(vaultAddress);
+        debtToken = IDebtToken(debtTokenAddress);
     }
 
     receive() external payable {}
@@ -80,15 +93,16 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
     function getDynamicMaxLTV() public view returns (uint256) {
         uint256 vol = oracle.getVolatilityIndex();
         if (vol < 20) {
-            return 7_500;
-        }
-        if (vol < 50) {
             return 7_000;
         }
-        if (vol < 80) {
-            return 6_500;
+        if (vol < 50) {
+            return 6_000;
         }
-        return 6_000;
+        return 4_000;
+    }
+
+    function getDynamicMaxLTV(uint256 rightsId) public view returns (uint256) {
+        return oracle.getDynamicLTV(rightsId);
     }
 
     function getCurrentLTV(uint256 rightsId) public view returns (uint256) {
@@ -110,20 +124,20 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         uint8 expectedType,
         uint256 amount
     ) external onlyRole(OPERATOR_ROLE) nonReentrant {
-        // Borrow is blocked unless vault type and oracle route are consistent for the right.
         require(amount > 0, "Amount is zero");
         require(vault.isLocked(rightsId), "Right not in vault");
         require(oracle.validateOraclePath(rightsId, expectedType), "Oracle/type mismatch");
         require(vault.rightTypeOf(rightsId) == expectedType, "Vault/type mismatch");
-        require(checkOracleHealth(rightsId), "Panic mode active");
+        require(checkOracleHealth(rightsId), "Oracle risk active");
 
         Position storage p = positions[rightsId];
         require(!p.inPanic, "Right in panic");
+        require(!p.liquidated, "Right liquidated");
 
-        uint256 value = vault.getSnapshotValue(rightsId);
+        uint256 value = oracle.getLiquidationValue(rightsId);
         require(value > 0, "No oracle value");
 
-        uint256 maxDebt = (value * getDynamicMaxLTV()) / BASIS_POINTS;
+        uint256 maxDebt = (value * oracle.getDynamicLTV(rightsId)) / BASIS_POINTS;
         require(p.debt + amount <= maxDebt, "LTV cap exceeded");
         require(address(this).balance >= amount, "Insufficient liquidity");
 
@@ -131,17 +145,21 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         require(recipient != address(0), "Invalid recipient");
 
         p.debt += amount;
+        debtToken.mint(recipient, amount);
         autoProtect(rightsId, expectedType);
 
         (bool ok, ) = recipient.call{value: amount}("");
         require(ok, "Borrow transfer failed");
 
-        emit Borrow(rightsId, amount);
+        emit Borrowed(rightsId, recipient, amount, p.debt);
     }
 
     function autoProtect(uint256 rightsId, uint8 expectedType) public {
         bool typeMismatch = !oracle.validateOraclePath(rightsId, expectedType);
-        if (typeMismatch || getCurrentLTV(rightsId) > AUTO_PANIC_LTV) {
+        bool oracleRisk = oracle.getRiskStatus(rightsId);
+        uint256 currentLtv = getCurrentLTV(rightsId);
+
+        if (typeMismatch || oracleRisk || currentLtv > AUTO_PANIC_LTV) {
             Position storage p = positions[rightsId];
             if (!p.inPanic) {
                 p.inPanic = true;
@@ -149,6 +167,8 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
                 emit PanicTriggered(rightsId);
             }
         }
+
+        _autoLiquidateIfNeeded(rightsId, currentLtv);
     }
 
     function checkAndUpdatePanic(uint256 rightsId) public returns (bool) {
@@ -156,7 +176,8 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
 
         uint8 expectedType = vault.rightTypeOf(rightsId);
         bool typeMismatch = !oracle.validateOraclePath(rightsId, expectedType);
-        bool ltvBreach = getCurrentLTV(rightsId) > getDynamicMaxLTV();
+        uint256 currentLtv = getCurrentLTV(rightsId);
+        bool ltvBreach = currentLtv > oracle.getDynamicLTV(rightsId);
         bool oracleRisk = oracle.getRiskStatus(rightsId);
         bool shouldPanic = typeMismatch || ltvBreach || oracleRisk;
 
@@ -168,7 +189,10 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         } else if (!shouldPanic && p.inPanic) {
             p.inPanic = false;
             rightInPanic[rightsId] = false;
+            emit PanicResolved(rightsId);
         }
+
+        _autoLiquidateIfNeeded(rightsId, currentLtv);
 
         return p.inPanic;
     }
@@ -198,6 +222,8 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         require(vault.isLocked(rightsId), "Right not in vault");
 
         Position storage p = positions[rightsId];
+        address borrower = vault.lockedBy(rightsId);
+        require(borrower != address(0), "Invalid borrower");
         if (amount > p.debt) {
             used = p.debt;
         } else {
@@ -205,7 +231,10 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         }
 
         p.debt -= used;
-        emit Repay(rightsId, used);
+        if (used > 0) {
+            debtToken.burnFromLoan(borrower, used);
+        }
+        emit Repaid(rightsId, msg.sender, used, p.debt);
         checkAndUpdatePanic(rightsId);
     }
 
@@ -223,5 +252,52 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
 
     function isPanicMode(uint256 rightsId) external view returns (bool) {
         return rightInPanic[rightsId];
+    }
+
+    function checkAndLiquidate(uint256 rightsId) external nonReentrant returns (bool) {
+        require(vault.isLocked(rightsId), "Right not in vault");
+        Position storage p = positions[rightsId];
+        if (p.debt == 0 || p.liquidated) {
+            return false;
+        }
+
+        uint256 currentLtv = getCurrentLTV(rightsId);
+        bool shouldLiquidate = currentLtv > oracle.getDynamicLTV(rightsId) || oracle.getRiskStatus(rightsId);
+        if (!shouldLiquidate) {
+            return false;
+        }
+
+        _liquidate(rightsId, currentLtv);
+        return true;
+    }
+
+    function _autoLiquidateIfNeeded(uint256 rightsId, uint256 currentLtv) internal {
+        Position storage p = positions[rightsId];
+        if (p.debt == 0 || p.liquidated) {
+            return;
+        }
+
+        bool shouldLiquidate = currentLtv > oracle.getDynamicLTV(rightsId) || oracle.getRiskStatus(rightsId);
+        if (shouldLiquidate) {
+            _liquidate(rightsId, currentLtv);
+        }
+    }
+
+    function _liquidate(uint256 rightsId, uint256 currentLtv) internal {
+        Position storage p = positions[rightsId];
+        address borrower = vault.lockedBy(rightsId);
+        uint256 debtCleared = p.debt;
+
+        p.debt = 0;
+        p.inPanic = true;
+        p.liquidated = true;
+        rightInPanic[rightsId] = true;
+
+        if (borrower != address(0) && debtCleared > 0) {
+            debtToken.burnFromLoan(borrower, debtCleared);
+        }
+
+        emit PanicTriggered(rightsId);
+        emit Liquidated(rightsId, debtCleared, currentLtv);
     }
 }
