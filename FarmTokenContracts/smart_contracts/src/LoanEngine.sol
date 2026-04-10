@@ -17,6 +17,7 @@ interface IVault {
     function lockedBy(uint256 rightsId) external view returns (address);
     function rightTypeOf(uint256 rightsId) external view returns (uint8);
     function getSnapshotValue(uint256 rightsId) external view returns (uint256);
+    function transferRightsOnLiquidation(uint256 rightsId, address to) external;
 }
 
 interface IDebtToken {
@@ -59,6 +60,7 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
     event Borrowed(uint256 indexed rightsId, address indexed borrower, uint256 amount, uint256 debtAfter);
     event Repaid(uint256 indexed rightsId, address indexed payer, uint256 amount, uint256 debtAfter);
     event Liquidated(uint256 indexed rightsId, uint256 debtCleared, uint256 ltvBps);
+    event LiquidatedCommercialOnly(uint256 indexed tokenId, address indexed liquidator, uint256 debtAmount);
     event PanicTriggered(uint256 indexed rightsId);
     event PanicResolved(uint256 indexed rightsId);
     event PanicModeEntered(uint256 indexed tokenId, uint256 currentLTV, uint256 panicThreshold);
@@ -400,6 +402,11 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         return !oracle.getRiskStatus(rightsId);
     }
 
+    function getLiquidationTerms(uint256 tokenId) external pure returns (string memory) {
+        tokenId;
+        return "Liquidation transfers only commercial rights (trademark license), not physical artwork.";
+    }
+
     function outstandingDebt(uint256 rightsId) external view returns (uint256) {
         return positions[rightsId].debt;
     }
@@ -442,14 +449,19 @@ contract LoanEngine is AccessControl, ReentrancyGuard {
         _setPanicState(rightsId, true);
         p.liquidated = true;
 
-        if (borrower != address(0) && debtCleared > 0) {
+        if (debtCleared > 0) {
+            require(borrower != address(0), "Invalid borrower");
             debtToken.burnFromLoan(borrower, debtCleared);
         }
+
+        // Liquidation settles collateral control for commercial rights only.
+        vault.transferRightsOnLiquidation(rightsId, msg.sender);
 
         emit PanicTriggered(rightsId);
         emit PanicModeEntered(rightsId, currentLtv, panicThresholdBps);
         emit PanicHistory(rightsId, true, currentLtv, panicThresholdBps, msg.sender, "liquidation");
         emit Liquidated(rightsId, debtCleared, currentLtv);
+        emit LiquidatedCommercialOnly(rightsId, msg.sender, debtCleared);
     }
 
     function _setPanicState(uint256 rightsId, bool enabled) internal {

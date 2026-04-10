@@ -1,0 +1,131 @@
+version: "3.9"
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: farm_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-farm_tokens}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-farm_tokens}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - farm_network
+
+  # Hardhat local blockchain
+  hardhat:
+    build:
+      context: ./smart_contracts
+      dockerfile: Dockerfile
+    container_name: farm_hardhat
+    ports:
+      - "8545:8545"
+    environment:
+      NODE_ENV: development
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - farm_network
+
+  # Database migration & Node.js backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: farm_backend
+    ports:
+      - "8000:8000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-farm_tokens}
+      RPC_URL: http://hardhat:8545
+      LOAN_ENGINE_ADDRESS: ${LOAN_ENGINE_ADDRESS}
+      VAULT_ADDRESS: ${VAULT_ADDRESS}
+      REVENUE_DISTRIBUTOR_ADDRESS: ${REVENUE_DISTRIBUTOR_ADDRESS}
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_me_in_production}
+      ADMIN_WALLET_ALLOWLIST: ${ADMIN_WALLET_ALLOWLIST}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      PRIVATE_KEY: ${PRIVATE_KEY}
+      ADMIN_PRIVATE_KEY: ${ADMIN_PRIVATE_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hardhat:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - farm_network
+    restart: unless-stopped
+
+  # Next.js frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: farm_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}
+      NEXT_PUBLIC_LOAN_ENGINE_ADDRESS: ${NEXT_PUBLIC_LOAN_ENGINE_ADDRESS}
+      NEXT_PUBLIC_VAULT_ADDRESS: ${NEXT_PUBLIC_VAULT_ADDRESS}
+      NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS: ${NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS}
+      NEXT_PUBLIC_MULTISIG_SIGNERS: ${NEXT_PUBLIC_MULTISIG_SIGNERS}
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - farm_network
+    restart: unless-stopped
+
+  # Python LTV monitor
+  python-monitor:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    container_name: farm_python_monitor
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-farm_tokens}
+      RPC_URL: http://hardhat:8545
+      BACKEND_URL: http://backend:8000
+      LOAN_ENGINE_ADDRESS: ${LOAN_ENGINE_ADDRESS}
+      VAULT_ADDRESS: ${VAULT_ADDRESS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - farm_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  farm_network:
+    driver: bridge

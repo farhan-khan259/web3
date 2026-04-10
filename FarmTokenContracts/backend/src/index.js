@@ -17,8 +17,12 @@ const {
   getAddress,
 } = require("ethers");
 const { WebSocketServer, WebSocket } = require("ws");
-const { PrismaClient, Prisma } = require("@prisma/client");
+const { Prisma } = require("@prisma/client");
 const dotenv = require("dotenv");
+const { createRoutes } = require("./routes");
+const { createRealtimeSocketServer } = require("./websocket");
+const { createAuthRouter, requireAdminJwt } = require("./auth");
+const prisma = require("./db");
 
 function loadEnv(filePath) {
   if (fs.existsSync(filePath)) {
@@ -33,7 +37,6 @@ loadEnv(path.resolve(__dirname, ".env.local"));
 const app = express();
 const server = http.createServer(app);
 const wsServer = new WebSocketServer({ server, path: "/ws" });
-const prisma = new PrismaClient();
 
 const generalLimiter = rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
@@ -65,6 +68,7 @@ const adminWalletAllowlist = String(
 const rpcUrl = String(process.env.RPC_URL || process.env.ALCHEMY_URL || "").trim();
 const loanEngineAddress = String(process.env.LOAN_ENGINE_ADDRESS || process.env.NEXT_PUBLIC_LOAN_ENGINE_ADDRESS || "").trim();
 const revenueDistributorAddress = String(process.env.REVENUE_DISTRIBUTOR_ADDRESS || process.env.NEXT_PUBLIC_REVENUE_ROUTER_ADDRESS || "").trim();
+const vaultAddress = String(process.env.VAULT_ADDRESS || process.env.NEXT_PUBLIC_VAULT_ADDRESS || "").trim();
 const adminPrivateKey = String(process.env.ADMIN_PRIVATE_KEY || process.env.PRIVATE_KEY || "").trim();
 const oracleWebhookUrl = String(process.env.ORACLE_UPDATE_WEBHOOK_URL || "").trim();
 const revenueWebhookUrl = String(process.env.REVENUE_DISTRIBUTION_WEBHOOK_URL || "").trim();
@@ -107,6 +111,27 @@ app.use(
   })
 );
 app.use(generalLimiter);
+
+// Health check endpoint
+app.get("/health", (request, response) => {
+  response.status(200).json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
+});
+
+app.use(createAuthRouter());
+app.use(createRoutes({ prisma, requireAdminJwt }));
+
+const socketServer = createRealtimeSocketServer({
+  httpServer: server,
+  prisma,
+  corsOrigins,
+  rpcUrl,
+  loanEngineAddress,
+  vaultAddress,
+});
 
 function jsonError(response, status, message, extra = {}) {
   return response.status(status).json({ error: message, ...extra });
@@ -453,6 +478,8 @@ app.post("/oracle/update", adminLimiter, authenticateAdmin, async (request, resp
         valuationSecondary: new Prisma.Decimal(valuationSecondary),
       },
     });
+
+    await socketServer.emitOracleUpdate(snapshot);
 
     await broadcastRealtimeUpdate();
 
@@ -983,7 +1010,7 @@ setInterval(() => {
   broadcastRealtimeUpdate().catch((error) => console.error(error));
 }, Number(process.env.REALTIME_POLL_INTERVAL_MS || 15_000));
 
-const port = Number(process.env.PORT || 4000);
+const port = Number(process.env.PORT || 8000);
 
 server.listen(port, () => {
   console.log(`Express backend listening on http://0.0.0.0:${port}`);

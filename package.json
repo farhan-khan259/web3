@@ -8,10 +8,10 @@
     "npm": ">=10.0.0"
   },
   "scripts": {
-    "dev": "npm run dev:frontend",
+    "dev": "node api.js && npm run dev:frontend",
     "dev:frontend": "cd FarmTokenContracts/frontend && npm run dev",
     "dev:backend": "node backend/src/server.js",
-    "build": "npm run build:frontend",
+    "build": "node api.js && npm run build:frontend",
     "build:frontend": "cd FarmTokenContracts/frontend && npm run build",
     "lint": "eslint . --ext .js,.cjs,.mjs,.ts,.tsx",
     "format": "prettier --write .",

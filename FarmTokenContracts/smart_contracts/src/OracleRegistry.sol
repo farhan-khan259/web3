@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
 interface IClassOracle {
     function setFloorPrice(uint256 rightsId, uint256 value) external;
@@ -24,6 +25,8 @@ interface AggregatorV3Interface {
  *      dynamic volatility, and oracle-driven risk/LTV.
  */
 contract OracleRegistry is Ownable {
+    using Strings for uint160;
+
     enum NFTType {
         NORMAL,
         RARE
@@ -44,7 +47,17 @@ contract OracleRegistry is Ownable {
         bool inPanic;
     }
 
+    struct TrademarkInfo {
+        string registrationNumber;
+        string owner;
+        bool verified;
+        uint256 lastChecked;
+    }
+
+    string public constant BANKSY_REGISTRATION_NUMBER = "UK00003897277";
+
     mapping(uint256 => RightRisk) private _risk;
+    mapping(uint256 => TrademarkInfo) public trademarkInfoByToken;
     mapping(uint256 => uint256) public rarityScore;
     mapping(uint256 => uint256) public utilityScore;
     mapping(uint256 => uint256) public distributionWeight;
@@ -54,6 +67,7 @@ contract OracleRegistry is Ownable {
 
     bool public trademarkValid;
     uint256 private _volatilityIndex;
+    string public banksyTrademarkOwner;
 
     IClassOracle public normalOracle;
     IClassOracle public rareOracle;
@@ -66,6 +80,7 @@ contract OracleRegistry is Ownable {
     event AppraisalCeilingUpdated(uint256 indexed rightsId, uint256 ceiling);
     event VolatilityUpdated(uint256 volatilityIndex);
     event TrademarkStatusUpdated(bool isValid);
+    event TrademarkVerified(uint256 indexed tokenId, string registrationNumber);
     event ProvenanceUpdated(uint256 indexed rightsId, bool isValid);
     event PanicTriggered(uint256 indexed rightsId);
     event PanicResolved(uint256 indexed rightsId);
@@ -87,6 +102,7 @@ contract OracleRegistry is Ownable {
 
         trademarkValid = true;
         _volatilityIndex = 10;
+        _setBanksyTrademarkOwner(initialOwner);
     }
 
     function setOracleContracts(address normalOracleAddress, address rareOracleAddress) external onlyOwner {
@@ -130,6 +146,7 @@ contract OracleRegistry is Ownable {
 
         r.nftType = nftType;
         r.typeSet = true;
+        _seedTrademarkInfo(rightsId);
         emit RightTypeUpdated(rightsId, nftType);
     }
 
@@ -145,6 +162,8 @@ contract OracleRegistry is Ownable {
     function updateValue(uint256 rightsId, uint256 value) public onlyOwner {
         require(value <= MAX_VALUE, "Value above MAX");
         require(_risk[rightsId].typeSet, "Type not set");
+
+        _seedTrademarkInfo(rightsId);
 
         if (_risk[rightsId].nftType == NFTType.RARE) {
             rareOracle.setFloorPrice(rightsId, value);
@@ -183,6 +202,7 @@ contract OracleRegistry is Ownable {
         _volatilityIndex = volatility;
         tokenVolatilityIndex[rightsId] = volatility;
         trademarkValid = isTrademarkValidValue;
+        _seedTrademarkInfo(rightsId);
         r.provenanceValid = isProvenanceValidValue;
 
         emit VolatilityUpdated(volatility);
@@ -201,6 +221,19 @@ contract OracleRegistry is Ownable {
     function setTrademarkStatus(bool isValid) external onlyOwner {
         trademarkValid = isValid;
         emit TrademarkStatusUpdated(isValid);
+    }
+
+    function setBanksyTrademarkOwner(address ownerAddress) external onlyOwner {
+        _setBanksyTrademarkOwner(ownerAddress);
+    }
+
+    function verifyTrademark(uint256 tokenId) external onlyOwner {
+        TrademarkInfo storage info = trademarkInfoByToken[tokenId];
+        info.registrationNumber = BANKSY_REGISTRATION_NUMBER;
+        info.owner = banksyTrademarkOwner;
+        info.verified = true;
+        info.lastChecked = block.timestamp;
+        emit TrademarkVerified(tokenId, info.registrationNumber);
     }
 
     function setProvenance(uint256 rightsId, bool isValid) external onlyOwner {
@@ -265,7 +298,7 @@ contract OracleRegistry is Ownable {
         uint256 updatedAt = getFloorTimestamp(rightsId);
         bool badPricing = routedValue == 0 || routedValue > MAX_VALUE;
         bool stalePricing = updatedAt == 0 || block.timestamp - updatedAt > MAX_STALE_SECONDS;
-        bool dataRisk = !trademarkValid || !r.provenanceValid;
+        bool dataRisk = !isTrademarkValid(rightsId) || !r.provenanceValid;
 
         return badPricing || stalePricing || dataRisk || r.inPanic;
     }
@@ -280,8 +313,9 @@ contract OracleRegistry is Ownable {
         return appraisalValue;
     }
 
-    function isTrademarkValid(uint256) public view returns (bool) {
-        return trademarkValid;
+    function isTrademarkValid(uint256 rightsId) public view returns (bool) {
+        TrademarkInfo memory info = trademarkInfoByToken[rightsId];
+        return trademarkValid && info.verified;
     }
 
     function isProvenanceValid(uint256 rightsId) public view returns (bool) {
@@ -322,6 +356,10 @@ contract OracleRegistry is Ownable {
     }
 
     function getValuations(uint256 rightsId) public view returns (uint256 liquidationValue, uint256 appraisalValue) {
+        if (!isTrademarkValid(rightsId)) {
+            return (0, 0);
+        }
+
         uint256 oraclePrice = getFloorValue(rightsId);
         if (oraclePrice == 0) {
             return (0, 0);
@@ -391,5 +429,21 @@ contract OracleRegistry is Ownable {
         tokenVolatilityIndex[rightsId] = localVol;
         _volatilityIndex = ((_volatilityIndex * 3) + localVol) / 4;
         emit VolatilityUpdated(_volatilityIndex);
+    }
+
+    function _seedTrademarkInfo(uint256 tokenId) internal {
+        TrademarkInfo storage info = trademarkInfoByToken[tokenId];
+        if (bytes(info.registrationNumber).length == 0) {
+            info.registrationNumber = BANKSY_REGISTRATION_NUMBER;
+            info.owner = banksyTrademarkOwner;
+            info.verified = true;
+            info.lastChecked = block.timestamp;
+            emit TrademarkVerified(tokenId, info.registrationNumber);
+        }
+    }
+
+    function _setBanksyTrademarkOwner(address ownerAddress) internal {
+        require(ownerAddress != address(0), "Invalid trademark owner");
+        banksyTrademarkOwner = Strings.toHexString(uint160(ownerAddress), 20);
     }
 }
