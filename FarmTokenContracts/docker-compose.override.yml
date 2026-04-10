@@ -1,0 +1,48 @@
+version: "3.9"
+
+# Development override for docker-compose.yml
+# Run with: docker-compose -f docker-compose.yml -f docker-compose.override.yml up
+
+services:
+  postgres:
+    # Keep default from docker-compose.yml
+    # Easiest to develop with local PostgreSQL if you have it installed
+    # Uncomment to use local database instead:
+    # profiles:
+    #   - local-db
+
+  backend:
+    # Override to use watch mode for auto-reload during development
+    # Uncomment the command below to use nodemon watch:
+    # command: npm run dev
+    
+    # Mount local source code for live editing
+    volumes:
+      - ./backend/src:/app/src
+      - ./prisma:/app/prisma
+    
+    # Keep exposed ports
+    ports:
+      - "8000:8000"
+
+  frontend:
+    # Mount source code for hot reload
+    volumes:
+      - ./frontend/app:/app/app
+      - ./frontend/components:/app/components
+      - ./frontend/lib:/app/lib
+      - ./frontend/utils:/app/utils
+      - ./frontend/pages:/app/pages
+    
+    # Keep exposed ports
+    ports:
+      - "3000:3000"
+
+  python-monitor:
+    # Mount source code for auto-reload
+    volumes:
+      - ./python:/app
+    
+    # Uncomment to enable debug logging
+    environment:
+      - PYTHON_LOG_LEVEL=DEBUG

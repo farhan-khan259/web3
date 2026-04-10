@@ -1,5 +1,5 @@
 import { connectorsForWallets } from "@rainbow-me/rainbowkit";
-import { injectedWallet, walletConnectWallet } from "@rainbow-me/rainbowkit/wallets";
+import { walletConnectWallet } from "@rainbow-me/rainbowkit/wallets";
 import { createConfig, http, webSocket } from "wagmi";
 import * as wagmiChains from "wagmi/chains";
 import {
@@ -12,9 +12,7 @@ import { createPublicClient } from "viem";
 const projectId =
   process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID ||
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ||
-  "";
-
-const hasRealWalletConnectProjectId = Boolean(projectId);
+  "d390561164256cbb34b54970b33f6f01";
 
 // Requested imports are from wagmi/chains. Some toolchains expose chains via viem/chains,
 // so we safely fall back to viem exports when needed.
@@ -22,8 +20,8 @@ const mainnet = (wagmiChains as any).mainnet ?? viemMainnet;
 const sepolia = (wagmiChains as any).sepolia ?? viemSepolia;
 const hardhat = (wagmiChains as any).hardhat ?? viemHardhat;
 
-// Requested runtime chains: mainnet + local hardhat
-export const chains = [mainnet, hardhat] as const;
+// Requested runtime chains: mainnet + sepolia + local hardhat
+export const chains = [mainnet, sepolia, hardhat] as const;
 
 const appMetadata = {
   appName: "NFT Credit Engine",
@@ -66,32 +64,19 @@ export const rainbowKitDefaultConfig = {
   ssr: true,
 };
 
-// Ballet wallet integration is WalletConnect-based, so WalletConnect is placed first.
-const connectors = hasRealWalletConnectProjectId
-  ? connectorsForWallets(
-      [
-        {
-          groupName: "Primary",
-          wallets: [walletConnectWallet],
-        },
-      ],
-      {
-        appName: appMetadata.appName,
-        projectId,
-      }
-    )
-  : connectorsForWallets(
-      [
-        {
-          groupName: "Primary",
-          wallets: [injectedWallet],
-        },
-      ],
-      {
-        appName: appMetadata.appName,
-        projectId: "",
-      }
-    );
+// Ballet wallet uses WalletConnect, so keep WalletConnect as the only connector.
+const connectors = connectorsForWallets(
+  [
+    {
+      groupName: "Primary",
+      wallets: [walletConnectWallet],
+    },
+  ],
+  {
+    appName: appMetadata.appName,
+    projectId,
+  }
+);
 
 export const wagmiConfig = createConfig({
   chains,
@@ -100,6 +85,7 @@ export const wagmiConfig = createConfig({
   // Requested explicit clients are exported above; wagmi v2 uses transports in config.
   transports: {
     [mainnet.id]: http(mainnetHttpUrl),
+    [sepolia.id]: http(process.env.NEXT_PUBLIC_RPC_URL_TESTNET || sepolia.rpcUrls.default.http[0]),
     [hardhat.id]: http(hardhatHttpUrl),
   },
 });

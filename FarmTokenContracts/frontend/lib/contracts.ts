@@ -75,6 +75,7 @@ export const oracleAbi = [
 
 export const vaultAbi = [
   "function lockMintRight(uint256 rightsId, uint8 nftType, address locker) external",
+  "function lockMintingRights(uint256 rightsId, uint8 nftType, address locker, bool acknowledgesCommercialOnly) external",
   "function unlockMintRight(uint256 rightsId, address receiver) external",
   "function getLockedRightIds() external view returns (uint256[] memory)",
   "function getLockedRightsByWallet(address owner) external view returns (uint256[] memory)",
@@ -88,6 +89,7 @@ export const vaultAbi = [
 
 export const loanAbi = [
   "function positions(uint256 rightsId) external view returns (uint256 debt, bool inPanic, bool liquidated)",
+  "function panicThresholdBps() external view returns (uint256)",
   "function getCurrentLTV(uint256 rightsId) external view returns (uint256)",
   "function getDynamicMaxLTV() external view returns (uint256)",
   "function getDynamicMaxLTV(uint256 rightsId) external view returns (uint256)",
