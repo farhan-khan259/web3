@@ -4,11 +4,17 @@ import Link from "next/link";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 
 const links = [
-  { href: "/", label: "Dashboard" },
-  { href: "/vault", label: "Vault" },
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/nft-gallery", label: "NFT Gallery" },
+  { href: "/vault-deposit", label: "Vault Deposit" },
   { href: "/borrow", label: "Borrow" },
+  { href: "/loans", label: "Loans" },
+  { href: "/repay", label: "Repay" },
+  { href: "/license-marketplace", label: "License Market" },
   { href: "/revenue", label: "Revenue" },
-  { href: "/oracle-admin", label: "Oracle Admin" },
+  { href: "/transactions", label: "Transactions" },
+  { href: "/settings", label: "Settings" },
+  { href: "/admin/overview", label: "Admin" },
 ];
 
 export default function AppNav() {

@@ -1,0 +1,67 @@
+# Git and version control
+.git
+.gitignore
+.gitmodules
+.github
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+
+# Environment files (don't include in Docker)
+.env
+.env.local
+.env.*.local
+
+# Log files
+*.log
+logs/
+npm-debug.log
+yarn-error.log
+
+# Dependencies (will be installed in containers)
+node_modules/
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.cache/
+.turbo/
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Development utilities
+.hardhat-node.log
+.backend-nav.log
+backend.log
+
+# Test and coverage files
+coverage/
+.nyc_output/
+junit.xml
+
+# Temporary files
+*.tmp
+tmp/
+temp/
+
+# Documentation site
+site/
+
+# Docker files in subdirectories (optimized separately)
+docker-compose.*.yml

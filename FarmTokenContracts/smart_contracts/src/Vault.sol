@@ -26,6 +26,11 @@ contract Vault is AccessControl, ReentrancyGuard {
         RARE
     }
 
+    enum RightType {
+        PHYSICAL,
+        COMMERCIAL
+    }
+
     uint256 public immutable maxRightsSupply;
 
     struct MirrorRow {
@@ -50,6 +55,7 @@ contract Vault is AccessControl, ReentrancyGuard {
     mapping(uint256 => uint256) public snapshotValue;
     mapping(uint256 => NFTType) private _rightType;
     mapping(uint256 => bool) private _rightTypeSet;
+    mapping(uint256 => RightType) public rightTypeOfToken;
 
     uint256[] private _lockedRightsIds;
     mapping(uint256 => uint256) private _lockedIndexPlusOne;
@@ -57,7 +63,15 @@ contract Vault is AccessControl, ReentrancyGuard {
     event LoanEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
     event RightLocked(uint256 indexed rightsId, address indexed locker, NFTType nftType);
+    event CommercialRightsLocked(uint256 indexed rightsId, address indexed locker, RightType rightType);
     event RightUnlocked(uint256 indexed rightsId, address indexed receiver);
+    event CommercialRightsTransferredOnLiquidation(
+        uint256 indexed rightsId,
+        address indexed from,
+        address indexed to,
+        RightType rightType,
+        string clarification
+    );
     event SnapshotCaptured(uint256 indexed rightsId, uint256 value);
 
     constructor(uint256 totalRightsSupply, address admin) {
@@ -90,11 +104,30 @@ contract Vault is AccessControl, ReentrancyGuard {
         NFTType nftType,
         address locker
     ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        _lockMintingRights(rightsId, nftType, locker, true);
+    }
+
+    function lockMintingRights(
+        uint256 rightsId,
+        NFTType nftType,
+        address locker,
+        bool acknowledgesCommercialOnly
+    ) public onlyRole(OPERATOR_ROLE) nonReentrant {
+        _lockMintingRights(rightsId, nftType, locker, acknowledgesCommercialOnly);
+    }
+
+    function _lockMintingRights(
+        uint256 rightsId,
+        NFTType nftType,
+        address locker,
+        bool acknowledgesCommercialOnly
+    ) internal {
         require(rightsId > 0 && rightsId <= maxRightsSupply, "Invalid rightsId");
         require(locker != address(0), "Invalid locker");
         require(lockedBy[rightsId] == address(0), "Already locked");
         require(address(oracle) != address(0), "Oracle not configured");
         require(oracle.validateOraclePath(rightsId, uint8(nftType)), "Oracle/type mismatch");
+        require(acknowledgesCommercialOnly, "Must acknowledge commercial rights only");
 
         uint256 snap = oracle.getFloorValue(rightsId);
         require(snap > 0, "Snapshot value is zero");
@@ -104,6 +137,8 @@ contract Vault is AccessControl, ReentrancyGuard {
         snapshotValue[rightsId] = snap;
         _rightType[rightsId] = nftType;
         _rightTypeSet[rightsId] = true;
+        // Banksy collection policy: only commercial rights are collateralized in this vault.
+        rightTypeOfToken[rightsId] = RightType.COMMERCIAL;
 
         _lockedRightsByOwner[locker].push(rightsId);
         _ownerIndexPlusOne[rightsId] = _lockedRightsByOwner[locker].length;
@@ -113,6 +148,7 @@ contract Vault is AccessControl, ReentrancyGuard {
 
         emit SnapshotCaptured(rightsId, snap);
         emit RightLocked(rightsId, locker, nftType);
+        emit CommercialRightsLocked(rightsId, locker, RightType.COMMERCIAL);
     }
 
     function unlockMintRight(
@@ -135,9 +171,38 @@ contract Vault is AccessControl, ReentrancyGuard {
         delete snapshotValue[rightsId];
         delete _rightType[rightsId];
         delete _rightTypeSet[rightsId];
+        delete rightTypeOfToken[rightsId];
 
         _removeLockedRight(rightsId);
         emit RightUnlocked(rightsId, receiver);
+    }
+
+    function transferRightsOnLiquidation(
+        uint256 rightsId,
+        address to
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        require(to != address(0), "Invalid receiver");
+        address from = lockedBy[rightsId];
+        require(from != address(0), "Not locked");
+
+        _removeOwnerRight(from, rightsId);
+        if (lockedRightsCount[from] > 0) {
+            lockedRightsCount[from] -= 1;
+        }
+
+        lockedBy[rightsId] = to;
+        lockedRightsCount[to] += 1;
+        _lockedRightsByOwner[to].push(rightsId);
+        _ownerIndexPlusOne[rightsId] = _lockedRightsByOwner[to].length;
+
+        // This liquidation does not affect physical ownership of the original artwork.
+        emit CommercialRightsTransferredOnLiquidation(
+            rightsId,
+            from,
+            to,
+            RightType.COMMERCIAL,
+            "Only commercial rights (reproduction/licensing) are transferred"
+        );
     }
 
     function isLocked(uint256 rightsId) external view returns (bool) {
@@ -159,6 +224,15 @@ contract Vault is AccessControl, ReentrancyGuard {
 
     function getSnapshotValue(uint256 rightsId) external view returns (uint256) {
         return snapshotValue[rightsId];
+    }
+
+    function getRightsDescription(uint256 tokenId) external view returns (string memory) {
+        RightType rightType = rightTypeOfToken[tokenId];
+        if (rightType == RightType.COMMERCIAL) {
+            return "Commercial rights only: reproduction, licensing, and derivative monetization rights. Physical ownership of the original artwork is not transferred.";
+        }
+
+        return "No commercial rights are currently locked for this token. Physical ownership rights remain outside vault collateral.";
     }
 
     /**
