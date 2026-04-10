@@ -1,0 +1,16 @@
+node_modules
+.git
+.github
+.env.local
+.env
+.DS_Store
+*.log
+cache
+artifacts
+coverage
+dist
+build
+.hardhat
+.venv
+__pycache__
+.gitignore
